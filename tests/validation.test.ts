@@ -80,9 +80,15 @@ test("signature binds timestamp nonce and request body", () => {
   assert.equal(sameSecret("ab", "a"), false);
 });
 
-test("APPS_SCRIPT_URL validation only accepts https://script.google.com/macros/s/.../exec", () => {
+test("APPS_SCRIPT_URL validation accepts standard and Workspace /exec URLs", () => {
   assert.equal(
     isValidAppsScriptUrl("https://script.google.com/macros/s/AKfycbx12345/exec"),
+    true
+  );
+  assert.equal(
+    isValidAppsScriptUrl(
+      "https://script.google.com/a/macros/brighton.co.id/s/AKfycbx12345/exec"
+    ),
     true
   );
   assert.equal(
@@ -103,7 +109,7 @@ test("APPS_SCRIPT_URL validation only accepts https://script.google.com/macros/s
   }
 });
 
-test("same-origin check blocks mismatched Origin header and allows matching origin", () => {
+test("same-origin check blocks mismatched Origin header and allows matching origin, Origin: null, and Sec-Fetch-Site: same-origin", () => {
   assert.throws(
     () =>
       checkOrigin(
@@ -117,6 +123,24 @@ test("same-origin check blocks mismatched Origin header and allows matching orig
     checkOrigin(
       new Request("https://site.example/api/orders", {
         headers: { origin: "https://site.example", host: "site.example" },
+      })
+    )
+  );
+  assert.doesNotThrow(() =>
+    checkOrigin(
+      new Request("https://site.example/api/orders", {
+        headers: { origin: "null", host: "site.example" },
+      })
+    )
+  );
+  assert.doesNotThrow(() =>
+    checkOrigin(
+      new Request("https://internal-lambda.netlify.internal/api/orders", {
+        headers: {
+          origin: "https://brighton-smart-messenger.netlify.app",
+          host: "internal-lambda.netlify.internal",
+          "sec-fetch-site": "same-origin",
+        },
       })
     )
   );

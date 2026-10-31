@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
 export class ServiceError extends Error {
   constructor(
@@ -28,15 +28,17 @@ export function sameSecret(actual: string, expected: string) {
 }
 
 /**
- * Validates whether a URL is a valid Google Apps Script Web App `/exec` endpoint.
+ * Validates whether a URL is a valid Google Apps Script Web App `/exec` endpoint
+ * (supports both standard `/macros/s/.../exec` and Workspace `/a/macros/<domain>/s/.../exec`).
  */
 export function isValidAppsScriptUrl(url: string | undefined): url is string {
   if (!url) return false;
   try {
-    const target = new URL(url.trim());
+    const clean = url.trim().replace(/^["']+|["']+$/g, "");
+    const target = new URL(clean);
     return (
       target.origin === "https://script.google.com" &&
-      /^\/macros\/s\/[^/]+\/exec$/.test(target.pathname) &&
+      /^\/(?:a\/macros\/[^/]+\/|macros\/)s\/[^/]+\/exec$/.test(target.pathname) &&
       !target.search
     );
   } catch {
@@ -44,11 +46,20 @@ export function isValidAppsScriptUrl(url: string | undefined): url is string {
   }
 }
 
+export function resolveAppsScriptUrl(): string | undefined {
+  const raw =
+    process.env.APPS_SCRIPT_URL?.trim() ||
+    process.env.GOOGLE_APPS_SCRIPT_URL?.trim() ||
+    process.env.APPS_SCRIPT_WEBHOOK_URL?.trim();
+  if (!raw) return undefined;
+  return raw.replace(/^["']+|["']+$/g, "").trim() || undefined;
+}
+
 /**
  * Returns true when APPS_SCRIPT_URL is configured to a valid Google Apps Script Web App URL.
  */
 export function configured(): boolean {
-  return isValidAppsScriptUrl(process.env.APPS_SCRIPT_URL);
+  return isValidAppsScriptUrl(resolveAppsScriptUrl());
 }
 
 /**
@@ -75,9 +86,23 @@ export function resetRateLimitsForTest() {
  * Only requires `APPS_SCRIPT_URL`.
  */
 export async function bridge(action: string, data: unknown = {}) {
-  const rawUrl = process.env.APPS_SCRIPT_URL?.trim();
+  const rawUrl = resolveAppsScriptUrl();
   if (!isValidAppsScriptUrl(rawUrl)) {
     throw new ServiceError("NOT_CONFIGURED", 503);
+  }
+
+  const rawBody = JSON.stringify({ action, data });
+  const secret = process.env.APPS_SCRIPT_SECRET?.trim() || "";
+  let payloadText = rawBody;
+  if (secret.length >= 32) {
+    const ts = Date.now();
+    const nonce = randomUUID();
+    payloadText = JSON.stringify({
+      ts,
+      nonce,
+      body: rawBody,
+      signature: signature(secret, ts, nonce, rawBody),
+    });
   }
 
   let result: Response;
@@ -85,7 +110,7 @@ export async function bridge(action: string, data: unknown = {}) {
     result = await fetch(rawUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, data }),
+      body: payloadText,
       signal: AbortSignal.timeout(25000),
       cache: "no-store",
       redirect: "follow",
@@ -134,6 +159,7 @@ export async function bridge(action: string, data: unknown = {}) {
       PUBLIC_FORM_ID_NOT_ALLOWED: 503,
       FORM_SCHEMA: 503,
       FORM_CLOSED: 503,
+      FORM_AUTH_REQUIRED: 503,
     };
     throw new ServiceError(
       code in known ? code : "UPSTREAM_UNKNOWN",
@@ -146,10 +172,18 @@ export async function bridge(action: string, data: unknown = {}) {
 
 /**
  * Verifies same-origin requests when the browser sends both Origin and Host headers.
+ * Handles `Origin: null` (emitted by Chromium when `Referrer-Policy: no-referrer` is active)
+ * and `Sec-Fetch-Site: same-origin` behind Netlify/reverse proxies.
  */
 export function checkOrigin(req: Request) {
-  const originHeader = req.headers.get("origin");
-  if (!originHeader) return;
+  const originHeader = req.headers.get("origin")?.trim();
+  if (!originHeader || originHeader === "null") return;
+
+  const secFetchSite = req.headers.get("sec-fetch-site")?.trim().toLowerCase();
+  if (secFetchSite === "same-origin" || secFetchSite === "none") {
+    return;
+  }
+
   try {
     const reqUrl = new URL(req.url);
     const originUrl = new URL(originHeader);

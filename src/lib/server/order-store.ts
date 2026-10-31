@@ -6,7 +6,9 @@ import {
   buildGoogleFormParams,
   buildPrefilledGoogleFormUrl,
   GOOGLE_FORM_CONFIG,
+  type GoogleFormVerificationCode,
   resolveGoogleFormTaskLabel,
+  verifyGoogleFormResponseHtml,
 } from "../google-form";
 import type { OrderInput } from "../submission";
 
@@ -181,8 +183,14 @@ export function saveOrders(orders: StoredOrderRecord[]): void {
   }
 }
 
-export async function forwardToGoogleFormDirect(order: OrderInput, requestId: string): Promise<{
+export async function forwardToGoogleFormDirect(
+  order: OrderInput,
+  requestId: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<{
   directPosted: boolean;
+  code: GoogleFormVerificationCode;
+  httpStatus: number;
   responseId: string;
   prefillUrl: string;
 }> {
@@ -199,29 +207,42 @@ export async function forwardToGoogleFormDirect(order: OrderInput, requestId: st
     "post"
   );
 
+  const shortHash = requestId.split("-")[0].toUpperCase();
+  const responseId = `GF-${new Date().getFullYear()}-${shortHash}`;
+
   try {
-    const res = await fetch(GOOGLE_FORM_CONFIG.responseUrl, {
+    const res = await fetchImpl(GOOGLE_FORM_CONFIG.responseUrl, {
       method: "POST",
       headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+        Origin: "https://docs.google.com",
+        Referer: GOOGLE_FORM_CONFIG.viewUrl,
       },
       body: postParams.toString(),
-      signal: AbortSignal.timeout(6000),
+      signal: AbortSignal.timeout(12000),
       redirect: "manual",
     });
 
-    const directPosted = res.status >= 200 && res.status < 400;
-    const shortHash = requestId.split("-")[0].toUpperCase();
+    const html = await res.text().catch(() => "");
+    const verification = verifyGoogleFormResponseHtml(
+      res.status,
+      html,
+      res.headers.get("location")
+    );
+
     return {
-      directPosted,
-      responseId: `GF-${new Date().getFullYear()}-${shortHash}`,
+      directPosted: verification.verified,
+      code: verification.code,
+      httpStatus: res.status,
+      responseId,
       prefillUrl,
     };
   } catch {
-    const shortHash = requestId.split("-")[0].toUpperCase();
     return {
       directPosted: false,
-      responseId: `GF-${new Date().getFullYear()}-${shortHash}`,
+      code: "UPSTREAM_UNKNOWN",
+      httpStatus: 0,
+      responseId,
       prefillUrl,
     };
   }
@@ -233,6 +254,7 @@ export function recordConfirmedOrder(params: {
   order: OrderInput;
   responseId: string;
   updatedAt?: string;
+  syncMethod?: "direct_google_form" | "apps_script";
 }): StoredOrderRecord {
   const orders = loadOrders();
   const existing = orders.find((o) => o.id === params.id);
@@ -272,7 +294,7 @@ export function recordConfirmedOrder(params: {
     other: params.order.other || "",
     owner: params.order.owner as "YA" | "TIDAK",
     prefillUrl,
-    syncMethod: "apps_script",
+    syncMethod: params.syncMethod || "apps_script",
     lastCode: "",
     notifications: {
       email: { state: "accepted" },
@@ -289,6 +311,7 @@ export async function recordAndSyncOrder(params: {
   id: string;
   tokenHash: string;
   order: OrderInput;
+  fetchImpl?: typeof fetch;
 }): Promise<StoredOrderRecord> {
   const orders = loadOrders();
   const existing = orders.find((o) => o.id === params.id);
@@ -296,44 +319,22 @@ export async function recordAndSyncOrder(params: {
     return existing;
   }
 
-  const syncOut = await forwardToGoogleFormDirect(params.order, params.id);
-  const serviceObj = services.find((s) => s.id === params.order.task);
-  const taskLabel = serviceObj ? serviceObj.label : resolveGoogleFormTaskLabel(params.order.task);
-  const now = new Date().toISOString();
+  const syncOut = await forwardToGoogleFormDirect(
+    params.order,
+    params.id,
+    params.fetchImpl
+  );
+  if (!syncOut.directPosted) {
+    throw new Error(syncOut.code);
+  }
 
-  const record: StoredOrderRecord = {
+  return recordConfirmedOrder({
     id: params.id,
     tokenHash: params.tokenHash,
-    state: "synced",
+    order: params.order,
     responseId: syncOut.responseId,
-    createdAt: now,
-    updatedAt: now,
-    read: false,
-    name: params.order.code
-      ? `${params.order.name} (${params.order.code})`
-      : params.order.name,
-    code: params.order.code || "",
-    email: params.order.email,
-    unit: params.order.unit,
-    date: params.order.date,
-    address: params.order.address,
-    maps: params.order.maps || "",
-    taskId: params.order.task,
-    task: taskLabel,
-    other: params.order.other || "",
-    owner: params.order.owner as "YA" | "TIDAK",
-    prefillUrl: syncOut.prefillUrl,
-    syncMethod: syncOut.directPosted ? "direct_google_form" : "prefill_bridge",
-    lastCode: "",
-    notifications: {
-      email: { state: "accepted" },
-      whatsapp: { state: "accepted" },
-    },
-  };
-
-  orders.unshift(record);
-  saveOrders(orders.slice(0, 200));
-  return record;
+    syncMethod: "direct_google_form",
+  });
 }
 
 export function findOrderById(id: string): StoredOrderRecord | null {

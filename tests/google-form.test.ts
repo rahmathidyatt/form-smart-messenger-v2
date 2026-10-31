@@ -8,7 +8,9 @@ import {
   formatAgentIdentity,
   GOOGLE_FORM_CONFIG,
   resolveGoogleFormTaskLabel,
+  verifyGoogleFormResponseHtml,
 } from "../src/lib/google-form";
+import { forwardToGoogleFormDirect } from "../src/lib/server/order-store";
 
 test("Google Form configuration targets official Brighton HUB Cibubur form and 7 entry IDs", () => {
   assert.equal(GOOGLE_FORM_CONFIG.shortUrl, "https://forms.gle/DYqwvwHXGxERZihD7");
@@ -64,16 +66,18 @@ test("buildPrefilledGoogleFormUrl populates all 7 official entry parameters", ()
   assert.equal(parsed.searchParams.get("entry.2046702710"), "YA");
 });
 
-test("buildGoogleFormParams in post mode includes split date components for formResponse", () => {
+test("buildGoogleFormParams in post mode includes split date components and checkbox sentinels for formResponse", () => {
   const params = buildGoogleFormParams(
     {
       name: "Siti Rahma (PA-200)",
+      email: "siti@brighton.co.id",
       unit: "CROWN",
       date: "2026-11-05",
       address: "Jl. Alternatif Cibubur No. 8",
       task: "other",
       other: "Kirim dokumen tambahan",
       owner: "TIDAK",
+      requestId: "8f4b2c10-9a11-4d32-8e71-102938475601",
     },
     "post"
   );
@@ -82,7 +86,87 @@ test("buildGoogleFormParams in post mode includes split date components for form
   assert.equal(params.get("entry.934170759_month"), "11");
   assert.equal(params.get("entry.934170759_day"), "5");
   assert.equal(params.get("entry.902053342"), "Lainnya :");
+  assert.equal(params.get("entry.902053342_sentinel"), "");
   assert.equal(params.get("entry.2046702710"), "TIDAK");
+  assert.equal(params.get("entry.2046702710_sentinel"), "");
+  assert.equal(params.get("emailAddress"), "siti@brighton.co.id");
+  assert.ok(params.get("entry.1271873642")?.includes("Ref: 8F4B2C10"));
+});
+
+test("verifyGoogleFormResponseHtml distinguishes real confirmation from 401 auth and form validation errors", () => {
+  assert.deepEqual(
+    verifyGoogleFormResponseHtml(401, "<html>Unauthorized</html>"),
+    { verified: false, code: "FORM_AUTH_REQUIRED" }
+  );
+
+  assert.deepEqual(
+    verifyGoogleFormResponseHtml(
+      302,
+      "",
+      "https://accounts.google.com/ServiceLogin?continue=..."
+    ),
+    { verified: false, code: "FORM_AUTH_REQUIRED" }
+  );
+
+  assert.deepEqual(
+    verifyGoogleFormResponseHtml(
+      200,
+      '<form id="mG61Hd" data-first-entry="0"><div data-user-email-address="">Rekam alamat email dengan respons saya</div></form>'
+    ),
+    { verified: false, code: "FORM_AUTH_REQUIRED" }
+  );
+
+  assert.deepEqual(
+    verifyGoogleFormResponseHtml(
+      200,
+      '<form id="mG61Hd" data-first-entry="0"><div role="alert">Pertanyaan ini wajib diisi</div></form>'
+    ),
+    { verified: false, code: "FORM_SCHEMA" }
+  );
+
+  assert.deepEqual(
+    verifyGoogleFormResponseHtml(
+      200,
+      '<div class="vHW8K">Jawaban Anda telah direkam.</div><a href="https://docs.google.com/forms/d/e/1FAIpQL/viewform?usp=form_confirm">Kirim jawaban lain</a>'
+    ),
+    { verified: true, code: "SYNCED" }
+  );
+});
+
+test("forwardToGoogleFormDirect only reports directPosted=true when Google Forms confirms submission", async () => {
+  const sampleOrder = {
+    email: "agent@brighton.co.id",
+    name: "Rahmat (PA-101)",
+    code: "",
+    unit: "VISION",
+    date: "2099-01-01",
+    address: "Cluster Boston Blok B4 No. 12",
+    maps: "",
+    task: "banner",
+    other: "Pasang 1 banner",
+    owner: "YA",
+    consent: true,
+  };
+
+  const unauthorizedResult = await forwardToGoogleFormDirect(
+    sampleOrder,
+    "8f4b2c10-9a11-4d32-8e71-102938475601",
+    async () => new Response("Unauthorized", { status: 401 })
+  );
+  assert.equal(unauthorizedResult.directPosted, false);
+  assert.equal(unauthorizedResult.code, "FORM_AUTH_REQUIRED");
+
+  const confirmedResult = await forwardToGoogleFormDirect(
+    sampleOrder,
+    "8f4b2c10-9a11-4d32-8e71-102938475601",
+    async () =>
+      new Response(
+        '<div class="vHW8K">Jawaban Anda telah direkam</div>',
+        { status: 200 }
+      )
+  );
+  assert.equal(confirmedResult.directPosted, true);
+  assert.equal(confirmedResult.code, "SYNCED");
 });
 
 test("calculateTariffEstimate computes round-trip travel and banner installation fees accurately", () => {

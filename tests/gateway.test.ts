@@ -106,3 +106,12 @@ test('openForm_ rejects public responder ID starting with 1FAIpQL',()=>{
  assert.throws(()=>h.api.openForm_(),/PUBLIC_FORM_ID_NOT_ALLOWED/);
 });
 
+test('direct unsigned doPost succeeds even when legacy APPS_SCRIPT_SECRET remains in Script Properties',()=>{
+ const h=harness();
+ // h.props.APPS_SCRIPT_SECRET is still set ('test-key-with-more-than-32-characters')
+ const res=h.api.doPost({postData:{contents:JSON.stringify({action:'submit',data:h.request})}});
+ assert.equal(res.ok,true);
+ assert.equal(res.data.state,'synced');
+ assert.equal(res.data.responseId,'response-1');
+});
+

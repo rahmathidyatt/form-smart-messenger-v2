@@ -1,75 +1,58 @@
-# Panduan Aktivasi & Deployment Google Apps Script + Netlify (Smart Messenger V2)
+# Panduan Aktivasi & Deployment Google Form + Netlify (Smart Messenger V2)
 
-Dokumen ini menjelaskan langkah-langkah menghubungkan aplikasi web **Form Order Smart Messenger Brighton HUB Cibubur V2** secara langsung ke Google Form resmi menggunakan **Google Apps Script (`FormApp`)** dan men-deploy aplikasi ke **Netlify** hanya dengan 1 variabel environment (`APPS_SCRIPT_URL`).
+Dokumen ini menjelaskan dua metode koneksi server-side dari tombol **"Kirim & Sinkronkan Pesanan"** ke Google Form resmi **Brighton HUB Cibubur** (`https://forms.gle/DYqwvwHXGxERZihD7`) tanpa mewajibkan agent login akun Google di website:
+
+1. **Opsi A (Tanpa Environment Variable / Direct Server-Side `/formResponse`)**: Mengubah pengaturan pengumpulan email pada Google Form dari *"Terverifikasi"* menjadi *"Input responden"* atau *"Jangan kumpulkan"*.
+2. **Opsi B (Gateway Google Apps Script `APPS_SCRIPT_URL`)**: Memasang Web App Google Apps Script (`FormApp`) yang berjalan atas nama pemilik formulir sehingga tetap dapat mengirim respons meskipun Google Form mengaktifkan pembatasan *"Terverifikasi"*.
 
 ---
 
-## 1. Informasi Google Form Resmi
+## 1. Informasi Google Form Resmi & Pemetaan 7 Kolom
 
 - **Tautan pendek publik:** `https://forms.gle/DYqwvwHXGxERZihD7`
 - **Tautan publik (`viewform`):** `https://docs.google.com/forms/d/e/1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg/viewform`
-- **Catatan Penting ID Form:**
-  - String `1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg` adalah **Public Responder ID** (`/forms/d/e/.../viewform`).
-  - `FormApp.openById()` pada Google Apps Script **wajib** menggunakan **Internal Editor Form ID** dari URL editor (`/forms/d/<INTERNAL_FORM_ID>/edit`) atau dipasang langsung sebagai *Bound Script* di dalam Google Form tersebut.
-  - Fungsi `openForm_()` di `apps-script/Code.gs` secara otomatis menolak ID publik `1FAIpQL...` dengan kode `PUBLIC_FORM_ID_NOT_ALLOWED` agar tidak terjadi kesalahan konfigurasi.
+- **Endpoint pengiriman server (`formResponse`):** `https://docs.google.com/forms/d/e/1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg/formResponse`
 
-### Pemetaan 7 Pertanyaan Google Form (`DEFAULT_ITEM_MAP` di `apps-script/Code.gs`)
-
-| Field Aplikasi | Item ID Google Form | Entry ID (`viewform`) | Judul Pertanyaan di Google Form | Tipe | Wajib |
+| Field Aplikasi | Item ID Google Form | Entry ID (`formResponse`) | Judul Pertanyaan di Google Form | Tipe | Wajib |
 | --- | --- | --- | --- | --- | --- |
 | `name_code` | `1566074241` | `entry.879620768` | `NAMA DAN KODE AGENT` | `TEXT` | Ya |
 | `unit` | `760147080` | `entry.370605340` | `UNIT` (31 Unit Brighton) | `LIST` | Ya |
-| `date` | `1829319111` | `entry.934170759` | `TANGGAL PENGERJAAN ` | `DATE` | Ya |
+| `date` | `1829319111` | `entry.934170759` (`_year`, `_month`, `_day`) | `TANGGAL PENGERJAAN ` | `DATE` | Ya |
 | `address` (+ `maps`) | `508325269` | `entry.1051884350` | `ALAMAT LENGKAP PENUGASAN (Blok dan Nomor Rumah)` | `PARAGRAPH_TEXT` | Ya |
-| `task` | `1176534648` | `entry.902053342` | `TUGAS YANG DIBERIKAN  KE MESSENGER` | `CHECKBOX` | Ya |
-| `other` (+ `email` & `id`) | `1142790665` | `entry.1271873642` | `TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS)` | `PARAGRAPH_TEXT` | Opsional |
-| `owner` | `1280203260` | `entry.2046702710` | `APAKAH SUDAH KONFIRMASI PEMILIK/OWNER` | `CHECKBOX` | Ya |
+| `task` | `1176534648` | `entry.902053342` (+ `_sentinel`) | `TUGAS YANG DIBERIKAN  KE MESSENGER` | `CHECKBOX` | Ya |
+| `other` (+ `email` & `Ref`) | `1142790665` | `entry.1271873642` | `TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS)` | `PARAGRAPH_TEXT` | Opsional |
+| `owner` | `1280203260` | `entry.2046702710` (+ `_sentinel`) | `APAKAH SUDAH KONFIRMASI PEMILIK/OWNER` | `CHECKBOX` | Ya |
 
 ---
 
-## 2. Langkah Deployment Google Apps Script
+## 2. Mengapa Pengiriman Langsung Sebelumnya Ditolak (`HTTP 401` / `NOT_CONFIGURED`)
 
-1. **Buka Editor Google Form** menggunakan akun Google pemilik/editor formulir:
-   - Cara A (*Container-Bound*, paling mudah): Dari tampilan editor Google Form, klik ikon titik tiga di kanan atas → **Script editor (Editor skrip)**. Anda tidak perlu mengisi `FORM_ID` karena skrip otomatis memanggil `FormApp.getActiveForm()`.
-   - Cara B (*Standalone Script*): Buka `https://script.google.com`, buat project baru, lalu salin **Internal Form ID** dari bilah alamat editor Google Form:
-     `https://docs.google.com/forms/d/<INTERNAL_FORM_ID>/edit`
-2. **Salin Kode Apps Script**:
-   - Buat file `Catalog.gs` dan tempel isi dari `/apps-script/Catalog.gs`.
-   - Buka file `Code.gs` dan tempel isi dari `/apps-script/Code.gs`.
-   - (Opsional) Buat file `Diagnose.gs` dan tempel isi dari `/apps-script/Diagnose.gs`.
-3. **Atur Zona Waktu Project**:
-   - Buka **Project Settings (Setelan Proyek)** → pastikan **Time zone** diatur ke `Asia/Jakarta` (atau aktifkan *Show "appsscript.json" manifest file in editor* dan salin `/apps-script/appsscript.json`).
-4. **Isi Script Properties (Jika Menggunakan Cara B / Standalone)**:
-   - Di **Project Settings** → **Script Properties**, tambahkan:
-     - Property: `FORM_ID`
-     - Value: `<INTERNAL_FORM_ID>` (ID dari URL `/forms/d/<INTERNAL_FORM_ID>/edit`, **bukan** `1FAIpQL...`).
-5. **Uji Konfigurasi di Editor Apps Script**:
-   - Pilih fungsi `diagnoseWebsiteIntegration` atau `validateSetup` di toolbar atas, lalu klik **Run**.
-   - Setujui izin akses Google Forms saat diminta.
-   - Pastikan Execution Log menampilkan bahwa seluruh 31 unit dan 9 layanan valid.
-6. **Deploy sebagai Web App**:
-   - Klik **Deploy** → **New deployment**.
-   - Pilih jenis **Web app**.
-   - **Execute as:** `Me` (akun pemilik/editor Google Form).
-   - **Who has access:** `Anyone` (Siapa saja — wajib agar server Next.js/Netlify dapat mengirim data tanpa memaksa agent login Google).
-   - Klik **Deploy** dan salin **Web App URL** yang berakhiran `/exec`:
-     `https://script.google.com/macros/s/.../exec`
+1. **Di sisi aplikasi (`route.ts`)**: Sebelumnya `/api/orders` hanya memanggil `bridge()` yang mewajibkan variabel environment `APPS_SCRIPT_URL`. Ketika `APPS_SCRIPT_URL` kosong, server langsung mengembalikan kode `NOT_CONFIGURED` (*"Layanan pengiriman belum aktif pada server"*).
+2. **Di sisi Google Form (`1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg`)**: Pada pengaturan Google Form saat ini, menu **Setelan (Settings) → Respons (Responses) → Kumpulkan alamat email (Collect email addresses)** diatur ke **"Terverifikasi" (Verified)** (*"Rekam alamat email dengan respons saya"*). Pengaturan ini membuat Google menolak setiap `POST /formResponse` tanpa cookie login akun Google dengan status **`HTTP 401 Unauthorized`**.
+
+Sekarang `/api/orders` mendukung kedua jalur pengiriman secara otomatis dan memverifikasi respons HTML/JSON dari Google sebelum menampilkan **"Pesanan Berhasil Dikirim"**.
 
 ---
 
-## 3. Konfigurasi Variabel Environment (`.env.local` & Netlify)
+## 3. Cara Mengaktifkan Pengiriman Otomatis (Pilih Salah Satu)
 
-Aplikasi ini telah disederhanakan sehingga hanya membutuhkan **satu** variabel environment:
+### Opsi A — Tanpa Variabel Environment (Ubah 1 Pengaturan di Google Form)
+Jika Anda ingin aplikasi berjalan langsung di Netlify **tanpa perlu membuat Google Apps Script atau mengisi `APPS_SCRIPT_URL`**:
+1. Buka editor Google Form **FORM ORDER SMART MESSENGER BRIGHTON HUB CIBUBUR**.
+2. Buka tab **Setelan (Settings)** → klik bagian **Respons (Responses)**.
+3. Pada **Kumpulkan alamat email (Collect email addresses)**, ubah dari **Terverifikasi (Verified)** menjadi **Input responden (Responder input)** atau **Jangan kumpulkan (Do not collect)**.
+4. Pastikan **Batasi ke 1 respons (Limit to 1 response)** dalam keadaan **Nonaktif (Off)**.
+5. Selesai! Server `/api/orders` akan langsung mengirim data ke `/formResponse`, memverifikasi tanda konfirmasi Google Forms (`vHW8K` / `Jawaban Anda telah direkam`), dan menampilkan **"Pesanan Berhasil Dikirim"**.
 
-```env
-APPS_SCRIPT_URL=https://script.google.com/macros/s/ GANTI_DENGAN_DEPLOYMENT_ID /exec
-```
-
-Variabel lama yang tidak diperlukan (`ADMIN_ACCESS_TOKEN`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, `APPS_SCRIPT_SECRET`, `APP_ORIGIN`) telah dihapus dari alur pengiriman pesanan standar.
-
-### Pengaturan di Netlify:
-1. Buka dashboard site di **Netlify** → **Site configuration** → **Environment variables**.
-2. Tambahkan variabel:
+### Opsi B — Menggunakan Gateway Google Apps Script (`APPS_SCRIPT_URL`)
+Jika Anda ingin mempertahankan pengaturan Google Form apa adanya:
+1. Dari editor Google Form, klik ikon titik tiga di kanan atas → **Editor skrip (Script editor)** (sebagai *Container-Bound Script* sehingga `FormApp.getActiveForm()` otomatis terhubung tanpa perlu mengisi `FORM_ID`).
+2. Buat file `Catalog.gs` (salin isi `/apps-script/Catalog.gs`) dan `Code.gs` (salin isi `/apps-script/Code.gs`).
+3. Klik **Deploy** → **New deployment** → pilih jenis **Web app**:
+   - **Execute as:** `Me` (akun pemilik/editor Google Form)
+   - **Who has access:** `Anyone` (Siapa saja)
+4. Salin URL Web App yang berakhiran `/exec` (`https://script.google.com/macros/s/.../exec`).
+5. Di **Netlify** → **Site configuration** → **Environment variables**, tambahkan:
    - Key: `APPS_SCRIPT_URL`
    - Value: `https://script.google.com/macros/s/.../exec`
-3. Trigger deploy ulang (**Deploy site**). Route `/api/orders` akan berjalan sebagai fungsi serverless yang memvalidasi data, mencegah duplikasi berdasarkan ID pengajuan unik (`id`), menerapkan pembatasan laju (*rate limit*), dan meneruskan pesanan ke Google Form melalui `APPS_SCRIPT_URL`.
+6. Trigger deploy ulang di Netlify.

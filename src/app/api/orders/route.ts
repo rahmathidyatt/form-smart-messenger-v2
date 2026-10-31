@@ -2,6 +2,7 @@ import {
   bridge,
   checkOrigin,
   checkRateLimit,
+  configured,
   failure,
   hashToken,
   readBody,
@@ -10,6 +11,7 @@ import {
 } from "@/lib/server/bridge";
 import {
   findOrderById,
+  forwardToGoogleFormDirect,
   loadOrders,
   recordConfirmedOrder,
 } from "@/lib/server/order-store";
@@ -75,33 +77,82 @@ export async function POST(req: Request) {
       throw new ServiceError("VALIDATION", 400);
     }
 
-    const forwardedFor = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+    const forwardedFor =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
     checkRateLimit(`ip:${forwardedFor}`, 12, 15 * 60 * 1000);
     checkRateLimit(`email:${validOrder.data.email}`, 5, 15 * 60 * 1000);
 
-    const upstream = (await bridge("submit", {
-      id,
-      token,
-      order: validOrder.data,
-    })) as
-      | {
-          id?: string;
-          state?: string;
-          responseId?: string | null;
-          updatedAt?: string;
-        }
-      | undefined;
+    // 1. Primary Gateway: Google Apps Script Web App (`APPS_SCRIPT_URL`)
+    let appsScriptAuthFailed = false;
+    if (configured()) {
+      try {
+        const upstream = (await bridge("submit", {
+          id,
+          token,
+          order: validOrder.data,
+        })) as
+          | {
+              id?: string;
+              state?: string;
+              responseId?: string | null;
+              updatedAt?: string;
+              lastCode?: string;
+            }
+          | undefined;
 
-    if (!upstream || upstream.state !== "synced" || !upstream.responseId) {
-      throw new ServiceError("UPSTREAM_UNKNOWN", 503);
+        if (!upstream || upstream.state !== "synced" || !upstream.responseId) {
+          const upstreamCode =
+            typeof upstream?.lastCode === "string" &&
+            /^[A-Z_]{1,40}$/.test(upstream.lastCode)
+              ? upstream.lastCode
+              : "UPSTREAM_UNKNOWN";
+          throw new ServiceError(upstreamCode, 503);
+        }
+
+        const stored = recordConfirmedOrder({
+          id,
+          tokenHash,
+          order: validOrder.data,
+          responseId: upstream.responseId,
+          updatedAt: upstream.updatedAt,
+          syncMethod: "apps_script",
+        });
+
+        return success(
+          {
+            id: stored.id,
+            state: stored.state,
+            responseId: stored.responseId,
+            updatedAt: stored.updatedAt,
+            prefillUrl: stored.prefillUrl,
+            syncMethod: stored.syncMethod,
+          },
+          200
+        );
+      } catch (err) {
+        if (err instanceof ServiceError && err.code === "UNAUTHORIZED") {
+          appsScriptAuthFailed = true;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    // 2. Direct Server-Side Google Form `/formResponse` POST
+    const directOut = await forwardToGoogleFormDirect(validOrder.data, id);
+    if (!directOut.directPosted) {
+      if (appsScriptAuthFailed && directOut.code === "FORM_AUTH_REQUIRED") {
+        throw new ServiceError("FORM_AUTH_REQUIRED", 503);
+      }
+      throw new ServiceError(directOut.code, 503);
     }
 
     const stored = recordConfirmedOrder({
       id,
       tokenHash,
       order: validOrder.data,
-      responseId: upstream.responseId,
-      updatedAt: upstream.updatedAt,
+      responseId: directOut.responseId,
+      syncMethod: "direct_google_form",
     });
 
     return success(

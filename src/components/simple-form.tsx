@@ -334,7 +334,7 @@ export function SimpleForm() {
         setToast({
           id: receiptRecord.id,
           type: "success",
-          title: "Berhasil dikirim",
+          title: "Pesanan Berhasil Dikirim",
           description: `Pesanan berhasil dikirim (${receiptRecord.responseId}). Formulir telah direset otomatis.`,
         });
         reset(initial);
@@ -342,14 +342,18 @@ export function SimpleForm() {
       }
 
       const errorMessages: Record<string, string> = {
+        FORM_AUTH_REQUIRED:
+          "Pengiriman otomatis ditolak oleh Google Form (HTTP 401: pengaturan 'Kumpulkan alamat email = Terverifikasi' masih aktif di Google Form, dan Web App Apps Script masih memerlukan pembaruan deployment). Ubah pengaturan Email di Google Form menjadi 'Input responden' / 'Jangan kumpulkan' atau deploy ulang Code.gs pada Apps Script. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
+        UNAUTHORIZED:
+          "Deployment Google Apps Script saat ini masih mewajibkan APPS_SCRIPT_SECRET lama. Hapus properti APPS_SCRIPT_SECRET di Script Properties atau deploy ulang Code.gs terbaru. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
         NOT_CONFIGURED:
           "Layanan pengiriman belum aktif pada server. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
         CONFIG:
           "Konfigurasi layanan belum lengkap. Data formulir Anda tetap tersimpan.",
         PUBLIC_FORM_ID_NOT_ALLOWED:
-          "Konfigurasi ID formulir belum sesuai. Silakan hubungi staf operasional cabang.",
+          "Konfigurasi ID formulir belum sesuai (gunakan Internal Form ID pada Script Properties, bukan ID publik 1FAIpQL). Data formulir Anda tetap tersimpan.",
         FORM_SCHEMA:
-          "Struktur formulir sedang diperbarui. Data Anda tetap tersimpan.",
+          "Struktur formulir Google Form tidak sesuai atau ada kolom wajib yang ditolak. Data formulir Anda tetap tersimpan.",
         FORM_CLOSED:
           "Formulir pemesanan saat ini sedang ditutup untuk menerima respons baru.",
         VALIDATION: "Periksa kembali kolom yang wajib diisi.",
@@ -492,17 +496,17 @@ export function SimpleForm() {
               </div>
               <div>
                 <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
-                  <span>Berhasil dikirim</span>
+                  <span>Pesanan Berhasil Dikirim</span>
                   <span aria-hidden="true">·</span>
                   <span className="font-mono tabular-nums">
                     {sentReceipt.responseId}
                   </span>
                 </div>
                 <h2 className="text-lg font-bold text-slate-900 mt-0.5">
-                  Berhasil dikirim — Bukti Pengajuan Smart Messenger
+                  Pesanan Berhasil Dikirim — Bukti Pengajuan Smart Messenger
                 </h2>
                 <p className="text-xs text-slate-600 mt-1">
-                  Data pesanan telah berhasil dikirim dan formulir telah direset secara otomatis.
+                  Data pesanan telah berhasil dikirim ke Google Form dan formulir telah direset secara otomatis.
                 </p>
               </div>
             </div>

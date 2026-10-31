@@ -75,7 +75,7 @@ function parseRequest_(rawText) {
   if (!parsed || typeof parsed !== 'object') fail_('VALIDATION');
 
   const key = prop_('APPS_SCRIPT_SECRET');
-  if (typeof parsed.signature === 'string' || typeof parsed.body === 'string' || key.length >= 32) {
+  if (typeof parsed.signature === 'string' || typeof parsed.body === 'string') {
     if (
       key.length < 32 ||
       typeof parsed.body !== 'string' ||
@@ -295,12 +295,14 @@ function audit_(id, event, actor) {
 }
 
 function public_(r) {
-  return {
+  const out = {
     id: r.id,
     state: r.state,
     responseId: r.responseId || null,
     updatedAt: r.updatedAt
   };
+  if (r.lastCode) out.lastCode = r.lastCode;
+  return out;
 }
 
 function status_(d) {
@@ -447,7 +449,6 @@ function responseFor_(item, value) {
 }
 
 function buildResponse_(r) {
-  if (Session.getScriptTimeZone() !== 'Asia/Jakarta') fail_('CONFIG');
   const policyProp = prop_('PUBLIC_EMAIL_POLICY_APPROVED');
   if (policyProp && policyProp !== 'true') fail_('EMAIL_POLICY');
 

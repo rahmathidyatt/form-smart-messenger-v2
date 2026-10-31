@@ -128,6 +128,9 @@ export function formatOtherNotesForGoogleForm(input: GoogleFormSubmissionInput):
   if (input.email && input.email.trim()) {
     parts.push(`Kontak: ${input.email.trim()}`);
   }
+  if (input.requestId && input.requestId.trim()) {
+    parts.push(`Ref: ${input.requestId.trim().slice(0, 8).toUpperCase()}`);
+  }
   return parts.join(" | ");
 }
 
@@ -177,14 +180,93 @@ export function buildGoogleFormParams(
   params.set(fields.owner.entryId, input.owner.trim());
 
   if (mode === "post") {
+    params.set(`${fields.task.entryId}_sentinel`, "");
+    params.set(`${fields.owner.entryId}_sentinel`, "");
     params.set("fvv", "1");
     params.set("pageHistory", "0");
+    params.set("submissionTimestamp", "-1");
     if (input.email && input.email.trim()) {
       params.set("emailAddress", input.email.trim());
     }
   }
 
   return params;
+}
+
+export type GoogleFormVerificationCode =
+  | "SYNCED"
+  | "FORM_AUTH_REQUIRED"
+  | "FORM_CLOSED"
+  | "FORM_SCHEMA"
+  | "UPSTREAM_UNKNOWN";
+
+/**
+ * Strictly verifies the HTTP response from Google Forms `/formResponse`
+ * so the server never reports a false positive when Google Forms rejects
+ * an unauthenticated POST (HTTP 401/403) or re-renders the form with validation errors.
+ */
+export function verifyGoogleFormResponseHtml(
+  status: number,
+  html: string,
+  locationHeader?: string | null
+): { verified: boolean; code: GoogleFormVerificationCode } {
+  const loc = locationHeader || "";
+  if (
+    status === 401 ||
+    status === 403 ||
+    loc.includes("accounts.google.com") ||
+    loc.includes("ServiceLogin")
+  ) {
+    return { verified: false, code: "FORM_AUTH_REQUIRED" };
+  }
+
+  if (loc.includes("usp=form_confirm") || loc.includes("/formResponse")) {
+    if (status >= 300 && status < 400) {
+      return { verified: true, code: "SYNCED" };
+    }
+  }
+
+  if (status < 200 || status >= 400) {
+    return { verified: false, code: "UPSTREAM_UNKNOWN" };
+  }
+
+  const body = html || "";
+
+  if (
+    body.includes("tidak lagi menerima respons") ||
+    body.includes("no longer accepting responses")
+  ) {
+    return { verified: false, code: "FORM_CLOSED" };
+  }
+
+  const hasConfirmationMarker =
+    body.includes("vHW8K") ||
+    body.includes("freebirdFormviewerViewResponseConfirmationMessage") ||
+    body.includes("usp=form_confirm") ||
+    body.includes("Jawaban Anda telah direkam") ||
+    body.includes("Tanggapan Anda telah direkam") ||
+    body.includes("Your response has been recorded");
+
+  const hasInteractiveForm =
+    body.includes('id="mG61Hd"') && body.includes('data-first-entry="0"');
+
+  if (hasConfirmationMarker && !hasInteractiveForm) {
+    return { verified: true, code: "SYNCED" };
+  }
+
+  if (
+    body.includes('data-user-email-address=""') ||
+    body.includes("Rekam alamat email dengan respons saya") ||
+    body.includes("accounts.google.com/ServiceLogin")
+  ) {
+    return { verified: false, code: "FORM_AUTH_REQUIRED" };
+  }
+
+  if (hasInteractiveForm) {
+    return { verified: false, code: "FORM_SCHEMA" };
+  }
+
+  return { verified: false, code: "UPSTREAM_UNKNOWN" };
 }
 
 /**
