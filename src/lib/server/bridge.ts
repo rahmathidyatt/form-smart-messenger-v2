@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export class ServiceError extends Error {
   constructor(
@@ -28,114 +28,145 @@ export function sameSecret(actual: string, expected: string) {
 }
 
 /**
- * Returns true if the legacy external Apps Script + Turnstile stack is fully configured.
+ * Validates whether a URL is a valid Google Apps Script Web App `/exec` endpoint.
  */
-export function appsScriptConfigured() {
-  return Boolean(
-    process.env.APPS_SCRIPT_URL &&
-      process.env.APPS_SCRIPT_SECRET &&
-      process.env.APPS_SCRIPT_SECRET.length >= 32
-  );
-}
-
-export function turnstileConfigured() {
-  return Boolean(
-    process.env.TURNSTILE_SECRET_KEY && process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY
-  );
+export function isValidAppsScriptUrl(url: string | undefined): url is string {
+  if (!url) return false;
+  try {
+    const target = new URL(url.trim());
+    return (
+      target.origin === "https://script.google.com" &&
+      /^\/macros\/s\/[^/]+\/exec$/.test(target.pathname) &&
+      !target.search
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Streamlined Google Forms connection is always ready out-of-the-box via
- * direct Google Forms integration (https://forms.gle/DYqwvwHXGxERZihD7)
- * without requiring external Turnstile or Apps Script configuration.
+ * Returns true when APPS_SCRIPT_URL is configured to a valid Google Apps Script Web App URL.
  */
-export function configured() {
-  return true;
+export function configured(): boolean {
+  return isValidAppsScriptUrl(process.env.APPS_SCRIPT_URL);
 }
 
-export async function bridge(action: string, data: unknown = {}) {
-  const url = process.env.APPS_SCRIPT_URL;
-  const secret = process.env.APPS_SCRIPT_SECRET;
-  if (!url || !secret || secret.length < 32) throw new ServiceError("NOT_CONFIGURED");
-  const target = new URL(url);
-  if (
-    target.origin !== "https://script.google.com" ||
-    !/^\/macros\/s\/[^/]+\/exec$/.test(target.pathname) ||
-    target.search
-  ) {
-    throw new ServiceError("NOT_CONFIGURED");
+/**
+ * Lightweight in-memory rate limiter for abuse protection without CAPTCHA.
+ */
+const rateBuckets = new Map<string, number[]>();
+
+export function checkRateLimit(key: string, maxRequests = 10, windowMs = 15 * 60 * 1000) {
+  const now = Date.now();
+  const recent = (rateBuckets.get(key) || []).filter((t) => now - t < windowMs);
+  if (recent.length >= maxRequests) {
+    throw new ServiceError("RATE_LIMIT", 429);
   }
-  const body = JSON.stringify({ action, data });
-  const ts = Date.now();
-  const nonce = randomUUID();
+  recent.push(now);
+  rateBuckets.set(key, recent);
+}
+
+export function resetRateLimitsForTest() {
+  rateBuckets.clear();
+}
+
+/**
+ * Sends an action and data payload to the Google Apps Script Web App gateway (`APPS_SCRIPT_URL`).
+ * Only requires `APPS_SCRIPT_URL`.
+ */
+export async function bridge(action: string, data: unknown = {}) {
+  const rawUrl = process.env.APPS_SCRIPT_URL?.trim();
+  if (!isValidAppsScriptUrl(rawUrl)) {
+    throw new ServiceError("NOT_CONFIGURED", 503);
+  }
+
   let result: Response;
   try {
-    result = await fetch(url, {
+    result = await fetch(rawUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ts,
-        nonce,
-        body,
-        signature: signature(secret, ts, nonce, body),
-      }),
+      body: JSON.stringify({ action, data }),
       signal: AbortSignal.timeout(25000),
       cache: "no-store",
       redirect: "follow",
     });
   } catch {
-    throw new ServiceError("UPSTREAM_UNKNOWN");
+    throw new ServiceError("UPSTREAM_UNKNOWN", 503);
   }
+
   if (!result.ok) {
     console.error("SmartMessenger gateway HTTP", result.status);
-    throw new ServiceError("UPSTREAM_UNKNOWN");
+    throw new ServiceError("UPSTREAM_UNKNOWN", 503);
   }
-  let parsed;
+
+  let parsed: unknown;
   try {
     parsed = await result.json();
   } catch {
-    console.error("SmartMessenger gateway response is not JSON; check deployment access and URL");
-    throw new ServiceError("UPSTREAM_UNKNOWN");
-  }
-  if (!parsed || typeof parsed.ok !== "boolean") throw new ServiceError("UPSTREAM_UNKNOWN");
-  if (!parsed.ok) {
     console.error(
-      "SmartMessenger gateway rejected request",
-      typeof parsed.code === "string" && /^[A-Z_]{1,40}$/.test(parsed.code)
-        ? parsed.code
-        : "UNKNOWN"
+      "SmartMessenger gateway response is not JSON; check Apps Script Web App access is set to Anyone"
     );
+    throw new ServiceError("UPSTREAM_UNKNOWN", 503);
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    typeof (parsed as { ok?: unknown }).ok !== "boolean"
+  ) {
+    throw new ServiceError("UPSTREAM_UNKNOWN", 503);
+  }
+
+  const envelope = parsed as { ok: boolean; code?: string; data?: unknown };
+  if (!envelope.ok) {
+    const code =
+      typeof envelope.code === "string" && /^[A-Z_]{1,40}$/.test(envelope.code)
+        ? envelope.code
+        : "UPSTREAM_UNKNOWN";
+    console.error("SmartMessenger gateway rejected request:", code);
     const known: Record<string, number> = {
       NOT_FOUND: 404,
       CONFLICT: 409,
       VALIDATION: 400,
       RATE_LIMIT: 429,
       UNAUTHORIZED: 403,
+      CONFIG: 503,
+      PUBLIC_FORM_ID_NOT_ALLOWED: 503,
+      FORM_SCHEMA: 503,
+      FORM_CLOSED: 503,
     };
     throw new ServiceError(
-      parsed.code in known ? parsed.code : "UPSTREAM_UNKNOWN",
-      known[parsed.code] ?? 503
+      code in known ? code : "UPSTREAM_UNKNOWN",
+      known[code] ?? 503
     );
   }
-  return parsed.data;
+
+  return envelope.data;
 }
 
 /**
- * Enforces strict origin check (used by validation tests and when APP_ORIGIN is set).
+ * Verifies same-origin requests when the browser sends both Origin and Host headers.
  */
 export function checkOrigin(req: Request) {
-  const origin = process.env.APP_ORIGIN;
-  if (!origin || req.headers.get("origin") !== new URL(origin).origin) {
-    throw new ServiceError("ORIGIN", 403);
-  }
-}
+  const originHeader = req.headers.get("origin");
+  if (!originHeader) return;
+  try {
+    const reqUrl = new URL(req.url);
+    const originUrl = new URL(originHeader);
+    const hostHeader =
+      req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
+      req.headers.get("host")?.trim();
+    const expectedHost = hostHeader || reqUrl.host;
+    if (!expectedHost) return;
 
-/**
- * Checks origin only when APP_ORIGIN is explicitly configured in environment.
- */
-export function checkOriginIfConfigured(req: Request) {
-  if (process.env.APP_ORIGIN) {
-    checkOrigin(req);
+    const norm = (h: string) =>
+      h.replace(/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i, "loopback$2");
+    if (norm(originUrl.host) !== norm(expectedHost)) {
+      throw new ServiceError("ORIGIN", 403);
+    }
+  } catch (e) {
+    if (e instanceof ServiceError) throw e;
+    throw new ServiceError("ORIGIN", 403);
   }
 }
 
@@ -167,53 +198,8 @@ export async function readBody(req: Request) {
   }
 }
 
-export async function verifyChallenge(token: string) {
-  if (!process.env.TURNSTILE_SECRET_KEY || !process.env.APP_ORIGIN) {
-    throw new ServiceError("NOT_CONFIGURED");
-  }
-  const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    body: new URLSearchParams({
-      secret: process.env.TURNSTILE_SECRET_KEY,
-      response: token,
-    }),
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!response.ok) throw new ServiceError("CHALLENGE", 400);
-  const r = await response.json();
-  if (
-    !r.success ||
-    r.hostname !== new URL(process.env.APP_ORIGIN).hostname ||
-    r.action !== "order"
-  ) {
-    throw new ServiceError("CHALLENGE", 400);
-  }
-}
-
-export async function verifyChallengeIfConfigured(token: string) {
-  if (turnstileConfigured()) {
-    await verifyChallenge(token);
-  }
-}
-
-export function requireAdmin(req: Request) {
-  const secret = process.env.ADMIN_ACCESS_TOKEN;
-  if (!secret || secret.length < 32) throw new ServiceError("NOT_CONFIGURED");
-  const supplied = req.headers.get("authorization") ?? "";
-  if (!sameSecret(supplied, `Bearer ${secret}`)) {
-    throw new ServiceError("UNAUTHORIZED", 401);
-  }
-}
-
-export function requireAdminIfConfigured(req: Request) {
-  const secret = process.env.ADMIN_ACCESS_TOKEN;
-  if (secret && secret.length >= 32) {
-    requireAdmin(req);
-  }
-}
-
 export function failure(error: unknown) {
-  const e = error instanceof ServiceError ? error : new ServiceError("UNAVAILABLE");
+  const e = error instanceof ServiceError ? error : new ServiceError("UNAVAILABLE", 503);
   return Response.json(
     { ok: false, code: e.code },
     { status: e.status, headers: { "Cache-Control": "no-store" } }

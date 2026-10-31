@@ -13,6 +13,7 @@ import {
   ExternalLink,
   FileCheck2,
   Info,
+  Loader2,
   MapPin,
   RotateCcw,
   Search,
@@ -30,7 +31,6 @@ import {
 } from "@/lib/google-form";
 import { receiptSchema, type OrderInput, type Receipt } from "@/lib/submission";
 import { jakartaDate, rupiah } from "@/lib/utils";
-import { Challenge } from "@/components/challenge";
 import { TariffCalculator } from "@/components/tariff-calculator";
 
 const storageKey = "smart-messenger-pending-v3";
@@ -101,11 +101,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
   const [bannerCount, setBannerCount] = useState(2);
   const [bannerHeight, setBannerHeight] = useState(2.5);
 
-  // Optional Turnstile state (only required if NEXT_PUBLIC_TURNSTILE_SITE_KEY is configured)
-  const turnstileEnabled = Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY);
-  const [challenge, setChallenge] = useState("");
-  const [challengeKey, setChallengeKey] = useState(0);
-
   const attempt = useRef<Attempt | null>(null);
   const inFlight = useRef(false);
   const receiptRef = useRef<HTMLElement | null>(null);
@@ -122,12 +117,14 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
     control,
     reset,
     setValue,
-    formState: { errors },
+    formState: { errors, isSubmitting },
   } = useForm<AgentFormInput, unknown, OrderInput>({
     resolver: zodResolver(agentFormSchema),
     defaultValues: initial,
     mode: "onSubmit",
   });
+
+  const isSubmittingOrder = busy || isSubmitting;
 
   const watchedValues = useWatch({ control });
   const task = watchedValues.task || "";
@@ -220,10 +217,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
 
   async function submit(order: OrderInput) {
     if (inFlight.current) return;
-    if (turnstileEnabled && !challenge) {
-      setMessage("Selesaikan verifikasi keamanan terlebih dahulu.");
-      return;
-    }
 
     inFlight.current = true;
     setBusy(true);
@@ -298,19 +291,16 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
       const data = await request("/api/orders", {
         ...current.receipt,
         order: current.order,
-        challenge: challenge || "direct-mode",
         website: "",
       });
 
-      if (data.ok && data.data) {
+      if (data.ok && data.data && data.data.state === "synced" && data.data.responseId) {
         const receiptRecord: SubmittedReceiptState = {
           id: data.data.id || current.receipt.id,
-          responseId:
-            data.data.responseId ||
-            `GF-${new Date().getFullYear()}-${current.receipt.id.slice(0, 8).toUpperCase()}`,
+          responseId: data.data.responseId,
           updatedAt: data.data.updatedAt || new Date().toISOString(),
           prefillUrl: data.data.prefillUrl || fallbackPrefillUrl,
-          syncMethod: data.data.syncMethod || "direct_google_form",
+          syncMethod: data.data.syncMethod || "apps_script",
           order: finalOrder,
           estimatedCost: tariff.totalEstimatedCost,
           roundTripKm,
@@ -332,36 +322,40 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
         attempt.current = null;
         setSentReceipt(receiptRecord);
         setMessage("");
+        reset(initial);
         return;
       }
 
-      if (!data.ok) {
-        const messages: Record<string, string> = {
-          CHALLENGE: "Verifikasi kedaluwarsa. Silakan verifikasi kembali.",
-          VALIDATION: "Periksa kembali kolom yang wajib diisi.",
-          RATE_LIMIT: "Terlalu banyak permintaan. Silakan coba lagi dalam 15 menit.",
-          CONFLICT: "Pesanan sebelumnya sedang diperiksa staf kantor.",
-        };
-        if (messages[data.code]) {
-          setMessage(messages[data.code]);
-          return;
-        }
-      }
+      const errorMessages: Record<string, string> = {
+        NOT_CONFIGURED:
+          "Koneksi Google Apps Script (APPS_SCRIPT_URL) belum dikonfigurasi pada server. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
+        CONFIG:
+          "Konfigurasi Google Apps Script belum lengkap (pastikan FORM_ID internal sudah diisi di Script Properties). Data formulir Anda tetap tersimpan.",
+        PUBLIC_FORM_ID_NOT_ALLOWED:
+          "FORM_ID pada Google Apps Script menggunakan ID publik (/d/e/1FAIpQL...). Gunakan ID internal dari URL editor Google Form (/forms/d/<FORM_ID>/edit).",
+        FORM_SCHEMA:
+          "Struktur pertanyaan Google Form tidak sesuai dengan pemetaan item. Jalankan validateSetup() di Google Apps Script.",
+        FORM_CLOSED:
+          "Google Form saat ini sedang ditutup untuk menerima respons baru.",
+        VALIDATION: "Periksa kembali kolom yang wajib diisi.",
+        RATE_LIMIT: "Terlalu banyak permintaan. Silakan coba lagi dalam 15 menit.",
+        CONFLICT: "Pesanan ini sedang diproses atau sudah dikirim sebelumnya.",
+        UPSTREAM_UNKNOWN:
+          "Gagal mengirim ke Google Forms. Pastikan Web App Google Apps Script di-deploy dengan akses Anyone (Siapa saja), lalu coba lagi.",
+      };
 
+      const code = typeof data?.code === "string" ? data.code : "UPSTREAM_UNKNOWN";
       setMessage(
-        "Pengiriman sedang disinkronkan. Anda juga dapat langsung membuka tautan Google Form terisi otomatis di samping."
+        errorMessages[code] ||
+          "Pengiriman ke Google Forms belum berhasil. Data formulir Anda tetap tersimpan, silakan coba lagi."
       );
     } catch {
       setMessage(
-        "Koneksi terganggu. Anda tetap dapat melanjutkan melalui tombol Google Form Terisi Otomatis."
+        "Koneksi jaringan terganggu saat menghubungi server. Data formulir Anda tetap tersimpan, silakan coba kirim kembali."
       );
     } finally {
       setBusy(false);
       inFlight.current = false;
-      if (turnstileEnabled) {
-        setChallenge("");
-        setChallengeKey((k) => k + 1);
-      }
     }
   }
 
@@ -501,6 +495,7 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
       {/* Receipt / Confirmation State when an order is submitted */}
       {sentReceipt && (
         <section
+          id="form-success-banner"
           ref={receiptRef}
           role="status"
           aria-live="polite"
@@ -513,18 +508,18 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
               </div>
               <div>
                 <div className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
-                  <span>PESANAN BERHASIL DICATAT & DISIAPKAN</span>
+                  <span>Berhasil dikirim</span>
                   <span aria-hidden="true">·</span>
                   <span className="font-mono tabular-nums">
                     {sentReceipt.responseId}
                   </span>
                 </div>
                 <h2 className="text-xl font-bold text-slate-900 mt-0.5">
-                  Bukti Pengajuan Smart Messenger
+                  Berhasil dikirim — Bukti Pengajuan Smart Messenger
                 </h2>
                 <p className="text-xs text-slate-600 mt-1">
-                  Data pesanan telah disimpan di sistem operasional dan siap
-                  diteruskan/diverifikasi pada Google Form resmi HRD.
+                  Data pesanan telah berhasil dikirim ke Google Forms resmi HRD dan
+                  formulir telah direset secara otomatis.
                 </p>
               </div>
             </div>
@@ -642,22 +637,25 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
             <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
+                disabled={isSubmittingOrder}
                 onClick={() => applyScenarioPreset("banner")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 rounded-lg transition-colors whitespace-nowrap"
+                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
               >
                 Contoh Pasang Banner
               </button>
               <button
                 type="button"
+                disabled={isSubmittingOrder}
                 onClick={() => applyScenarioPreset("mou")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 rounded-lg transition-colors whitespace-nowrap"
+                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
               >
                 Contoh Antar MoU
               </button>
               <button
                 type="button"
+                disabled={isSubmittingOrder}
                 onClick={() => applyScenarioPreset("keys")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 rounded-lg transition-colors whitespace-nowrap"
+                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
               >
                 Contoh Kunci Properti
               </button>
@@ -668,21 +666,26 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 text-xs text-amber-900">
               <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <p>
-                Mode koneksi langsung Google Form aktif. Anda dapat mengirim
-                pesanan dari halaman ini atau membuka tautan Google Form yang
-                sudah terisi otomatis.
+                Variabel <code className="font-mono font-semibold">APPS_SCRIPT_URL</code>{" "}
+                belum diatur pada server. Pasang Web App Google Apps Script dan isi{" "}
+                <code className="font-mono font-semibold">APPS_SCRIPT_URL</code> agar
+                pengiriman otomatis ke Google Forms aktif, atau gunakan tombol{" "}
+                <strong>Buka di Google Form</strong> di bawah.
               </p>
             </div>
           )}
 
           <form
             noValidate
+            aria-busy={isSubmittingOrder}
             onSubmit={(event) => {
+              event.preventDefault();
+              if (inFlight.current || isSubmittingOrder) return;
               void handleSubmit(submit)(event);
             }}
             className="space-y-6"
           >
-            <fieldset disabled={busy} className="space-y-6">
+            <fieldset disabled={isSubmittingOrder} className="space-y-6">
               {/* Section 01: Data Pemesan & Unit */}
               <section className="bg-white border border-slate-200 rounded-xl p-6">
                 <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
@@ -1157,18 +1160,13 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
                 </label>
                 {err("consent")}
 
-                {turnstileEnabled && (
-                  <div className="pt-2">
-                    <Challenge key={challengeKey} onToken={setChallenge} />
-                  </div>
-                )}
-
                 {message && (
                   <div
+                    id="form-error-banner"
                     role="alert"
-                    className="p-3.5 rounded-lg bg-amber-50 border border-amber-200 flex items-start gap-2.5 text-xs text-amber-900"
+                    className="p-3.5 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-xs text-red-900"
                   >
-                    <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <Info className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                     <p>{message}</p>
                   </div>
                 )}
@@ -1176,13 +1174,26 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
                 <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                   <button
                     type="submit"
-                    disabled={busy || (turnstileEnabled && !challenge)}
-                    className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 disabled:opacity-50 rounded-xl transition-colors cursor-pointer whitespace-nowrap"
+                    disabled={isSubmittingOrder}
+                    aria-busy={isSubmittingOrder}
+                    aria-live="polite"
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:pointer-events-none rounded-xl transition-all cursor-pointer whitespace-nowrap"
                   >
-                    <Send className="w-4 h-4" aria-hidden="true" />
-                    <span>
-                      {busy ? "Menyinkronkan Pesanan…" : "Kirim & Sinkronkan Pesanan"}
-                    </span>
+                    {isSubmittingOrder ? (
+                      <>
+                        <Loader2
+                          data-testid="submit-spinner"
+                          className="w-4 h-4 animate-spin shrink-0"
+                          aria-hidden="true"
+                        />
+                        <span>Menyinkronkan Pesanan…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4 shrink-0" aria-hidden="true" />
+                        <span>Kirim & Sinkronkan Pesanan</span>
+                      </>
+                    )}
                   </button>
 
                   <div className="flex items-center gap-2">
@@ -1198,13 +1209,13 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
 
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={isSubmittingOrder}
                       onClick={() => {
                         reset(initial);
                         setMessage("");
                         setSentReceipt(null);
                       }}
-                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-3 text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-xl transition-colors whitespace-nowrap"
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-3 text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors whitespace-nowrap"
                     >
                       <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>Reset</span>

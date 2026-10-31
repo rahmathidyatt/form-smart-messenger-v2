@@ -17,7 +17,7 @@ const baseOrderSchema = z.object({
 export const orderSchema=baseOrderSchema.superRefine((v,c)=>{if(v.date<jakartaDate())c.addIssue({code:"custom",path:["date"],message:"Tanggal tidak boleh di masa lalu."});});
 export type OrderInput = z.input<typeof orderSchema>;
 export const receiptSchema=z.object({id:z.string().uuid(),token:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
-export const envelopeSchema=receiptSchema.extend({order:baseOrderSchema,challenge:z.string().max(2048),website:z.string().max(0)}).strict();
+export const envelopeSchema=receiptSchema.extend({order:baseOrderSchema,challenge:z.string().max(2048).optional().default(""),website:z.string().max(0).optional().default("")}).strict();
 export type Receipt=z.infer<typeof receiptSchema>;
 export type SyncResult={id:string;state:string;responseId:string|null;updatedAt:string;notifications?:Record<string,{state:string}>};
 export const statusLabels:Record<string,string>={queued:"Pengajuan diterima dan sedang diproses",retry_wait:"Pengajuan diterima dan sedang diproses",submitting:"Pengajuan sedang diproses",synced:"Pengajuan berhasil dikirim",needs_review:"Pengajuan sedang diperiksa staf. Tidak perlu mengirim ulang.",failed:"Pengajuan belum dapat diselesaikan. Silakan hubungi staf kantor."};

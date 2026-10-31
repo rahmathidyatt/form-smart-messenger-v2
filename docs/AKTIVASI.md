@@ -1,74 +1,75 @@
-# Aktivasi Google Form resmi dan Netlify
+# Panduan Aktivasi & Deployment Google Apps Script + Netlify (Smart Messenger V2)
 
-## 1. Persetujuan data dan akses pengelola
+Dokumen ini menjelaskan langkah-langkah menghubungkan aplikasi web **Form Order Smart Messenger Brighton HUB Cibubur V2** secara langsung ke Google Form resmi menggunakan **Google Apps Script (`FormApp`)** dan men-deploy aplikasi ke **Netlify** hanya dengan 1 variabel environment (`APPS_SCRIPT_URL`).
 
-Gunakan akun yang berhak mengedit Google Form asli dan mengakses sheet laporan HRD. Link responden `/forms/d/e/.../viewform` tidak memberikan hak editor dan ID publik tersebut bukan ID file editor untuk `FormApp.openById()`.
+---
 
-Ambil `FORM_ID` dari URL editor `https://docs.google.com/forms/d/ID_FILE_FORM/edit`. Jangan menebak dari link responden.
+## 1. Informasi Google Form Resmi
 
-Koordinasikan dengan HRD terlebih dahulu:
+- **Tautan pendek publik:** `https://forms.gle/DYqwvwHXGxERZihD7`
+- **Tautan publik (`viewform`):** `https://docs.google.com/forms/d/e/1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg/viewform`
+- **Catatan Penting ID Form:**
+  - String `1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg` adalah **Public Responder ID** (`/forms/d/e/.../viewform`).
+  - `FormApp.openById()` pada Google Apps Script **wajib** menggunakan **Internal Editor Form ID** dari URL editor (`/forms/d/<INTERNAL_FORM_ID>/edit`) atau dipasang langsung sebagai *Bound Script* di dalam Google Form tersebut.
+  - Fungsi `openForm_()` di `apps-script/Code.gs` secara otomatis menolak ID publik `1FAIpQL...` dengan kode `PUBLIC_FORM_ID_NOT_ALLOWED` agar tidak terjadi kesalahan konfigurasi.
 
-- Form tetap tujuan resmi.
-- Email tanpa login adalah self-declared. Kolom email otomatis bawaan Google tidak dapat diisi secara bebas melalui API FormResponse. Periksa hasil aktual `getRespondentEmail()` pada uji integrasi dan jangan gunakan sebagai email agent dari website.
-- Tambahkan tiga pertanyaan **opsional di akhir Form**, setelah disetujui pengelola: `EMAIL PEMESAN WEBSITE` (short answer), `ID PENGAJUAN WEBSITE` (short answer), `DETAIL WEBSITE` (paragraph). Pertanyaan ini terlihat bagi pengisi Form biasa; Google Form tidak menyediakan hidden field biasa. Jangan mewajibkannya bagi jalur Form lama.
-- HRD memakai kolom `EMAIL PEMESAN WEBSITE` untuk sumber website. `DETAIL WEBSITE` menyimpan Maps, asal website, waktu penerimaan, versi persetujuan, serta status email self-declared.
-- Tidak mengubah pengaturan pengumpulan email, pembatasan organisasi, atau persetujuan formulir secara otomatis. Uji kompatibilitas pengaturan asli dengan script; jangan melewati kebijakan organisasi. Set `PUBLIC_EMAIL_POLICY_APPROVED=true` hanya setelah keputusan pengelola.
+### Pemetaan 7 Pertanyaan Google Form (`DEFAULT_ITEM_MAP` di `apps-script/Code.gs`)
 
-Penambahan metadata diperlukan agar sinkronisasi dapat direkonsiliasi saat koneksi putus. Tidak menjanjikan exactly-once lintas layanan Google karena ledger dan submit Form bukan satu transaksi atomik.
+| Field Aplikasi | Item ID Google Form | Entry ID (`viewform`) | Judul Pertanyaan di Google Form | Tipe | Wajib |
+| --- | --- | --- | --- | --- | --- |
+| `name_code` | `1566074241` | `entry.879620768` | `NAMA DAN KODE AGENT` | `TEXT` | Ya |
+| `unit` | `760147080` | `entry.370605340` | `UNIT` (31 Unit Brighton) | `LIST` | Ya |
+| `date` | `1829319111` | `entry.934170759` | `TANGGAL PENGERJAAN ` | `DATE` | Ya |
+| `address` (+ `maps`) | `508325269` | `entry.1051884350` | `ALAMAT LENGKAP PENUGASAN (Blok dan Nomor Rumah)` | `PARAGRAPH_TEXT` | Ya |
+| `task` | `1176534648` | `entry.902053342` | `TUGAS YANG DIBERIKAN  KE MESSENGER` | `CHECKBOX` | Ya |
+| `other` (+ `email` & `id`) | `1142790665` | `entry.1271873642` | `TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS)` | `PARAGRAPH_TEXT` | Opsional |
+| `owner` | `1280203260` | `entry.2046702710` | `APAKAH SUDAH KONFIRMASI PEMILIK/OWNER` | `CHECKBOX` | Ya |
 
-## 2. Siapkan Apps Script
+---
 
-1. Buat proyek Apps Script di akun pengelola. Salin `Code.gs` dan `Catalog.gs` ke file dengan nama sama.
-2. Aktifkan tampilan manifest melalui Project Settings lalu salin `appsscript.json`. Zona waktu harus `Asia/Jakarta`.
-3. Buat spreadsheet baru **privat** untuk ledger. Jangan gunakan sheet respons HRD sebagai ledger dan jangan memilih "anyone with the link".
-4. Pada Script Properties, isi `FORM_ID`, `LEDGER_SPREADSHEET_ID`, `APPS_SCRIPT_SECRET` (acak minimal 32 karakter), dan nanti `ITEM_MAP_JSON`. Contoh nama variabel ada di `script-properties.example.json`; nilai kosong berarti belum siap, bukan kredensial.
-5. Jalankan `inspectForm()` dari editor. Hasil hanya inventaris judul/ID/tipe/opsi, tanpa data jawaban responden. Cocokkan pertanyaan dan pilihan dengan Form asli.
-6. Isi `ITEM_MAP_JSON` berdasarkan `item-map.example.json` menggunakan ID aktual. `null` pada contoh wajib diganti. Judul harus cocok, spasi berulang dinormalisasi. Jangan memakai posisi item sebagai ID.
-7. Jalankan `setupLedger()`: membuat tab Submissions dan Audit pada ledger; tidak mengubah Form asli. Berikan izin Google yang diminta jika sesuai akun pengelola.
-8. Jalankan `validateSetup()`. Fungsi ini membangun respons tanpa `submit()`, untuk memeriksa pemetaan seluruh unit, layanan dan owner. Tidak mengirim email atau WhatsApp. Perbaiki jenis item/pilihan/ID jika gagal.
-9. Jalankan `installWorker()` sekali. Trigger waktu setiap menit untuk retry dan notifikasi; pemasangan ulang mengganti hanya trigger `worker` proyek ini. Aktifkan notifikasi kegagalan trigger di pengaturan Google dan pantau Executions.
-10. Deploy → New deployment → Web app → execute as akun pengelola. Akses endpoint perlu memungkinkan panggilan server Next.js tanpa sesi Google (opsi sesuai kebijakan Workspace). Endpoint tetap memverifikasi HMAC. Bila Workspace melarang endpoint ini, jangan melemahkan kebijakan; gunakan arsitektur gateway yang disetujui pengelola. Salin URL `/exec`, bukan `/dev`.
-11. Setiap perubahan source Apps Script memerlukan update deployment/version web app. Trigger waktu memakai source proyek terkini; pastikan source trigger dan deployment web app konsisten sebelum go-live.
+## 2. Langkah Deployment Google Apps Script
 
-## 3. Pemetaan jawaban
+1. **Buka Editor Google Form** menggunakan akun Google pemilik/editor formulir:
+   - Cara A (*Container-Bound*, paling mudah): Dari tampilan editor Google Form, klik ikon titik tiga di kanan atas → **Script editor (Editor skrip)**. Anda tidak perlu mengisi `FORM_ID` karena skrip otomatis memanggil `FormApp.getActiveForm()`.
+   - Cara B (*Standalone Script*): Buka `https://script.google.com`, buat project baru, lalu salin **Internal Form ID** dari bilah alamat editor Google Form:
+     `https://docs.google.com/forms/d/<INTERNAL_FORM_ID>/edit`
+2. **Salin Kode Apps Script**:
+   - Buat file `Catalog.gs` dan tempel isi dari `/apps-script/Catalog.gs`.
+   - Buka file `Code.gs` dan tempel isi dari `/apps-script/Code.gs`.
+   - (Opsional) Buat file `Diagnose.gs` dan tempel isi dari `/apps-script/Diagnose.gs`.
+3. **Atur Zona Waktu Project**:
+   - Buka **Project Settings (Setelan Proyek)** → pastikan **Time zone** diatur ke `Asia/Jakarta` (atau aktifkan *Show "appsscript.json" manifest file in editor* dan salin `/apps-script/appsscript.json`).
+4. **Isi Script Properties (Jika Menggunakan Cara B / Standalone)**:
+   - Di **Project Settings** → **Script Properties**, tambahkan:
+     - Property: `FORM_ID`
+     - Value: `<INTERNAL_FORM_ID>` (ID dari URL `/forms/d/<INTERNAL_FORM_ID>/edit`, **bukan** `1FAIpQL...`).
+5. **Uji Konfigurasi di Editor Apps Script**:
+   - Pilih fungsi `diagnoseWebsiteIntegration` atau `validateSetup` di toolbar atas, lalu klik **Run**.
+   - Setujui izin akses Google Forms saat diminta.
+   - Pastikan Execution Log menampilkan bahwa seluruh 31 unit dan 9 layanan valid.
+6. **Deploy sebagai Web App**:
+   - Klik **Deploy** → **New deployment**.
+   - Pilih jenis **Web app**.
+   - **Execute as:** `Me` (akun pemilik/editor Google Form).
+   - **Who has access:** `Anyone` (Siapa saja — wajib agar server Next.js/Netlify dapat mengirim data tanpa memaksa agent login Google).
+   - Klik **Deploy** dan salin **Web App URL** yang berakhiran `/exec`:
+     `https://script.google.com/macros/s/.../exec`
 
-| Kunci map | Pertanyaan / tipe | Data |
-|---|---|---|
-| name_code | NAMA DAN KODE AGENT, TEXT/PARAGRAPH_TEXT | Nama (Kode PA) |
-| unit | UNIT, LIST/MULTIPLE_CHOICE | Satu dari 31 unit |
-| date | TANGGAL PENGERJAAN, DATE dengan tahun | Tanggal, zona Jakarta |
-| address | ALAMAT LENGKAP PENUGASAN (Blok dan Nomor Rumah), TEXT/PARAGRAPH_TEXT | Alamat asli |
-| task | TUGAS YANG DIBERIKAN KE MESSENGER | Label tugas sesuai katalog, satu pilihan |
-| other | TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS), TEXT/PARAGRAPH_TEXT | Keterangan |
-| owner | APAKAH SUDAH KONFIRMASI PEMILIK/OWNER, LIST/MULTIPLE_CHOICE | YA/TIDAK |
-| email | EMAIL PEMESAN WEBSITE, TEXT | Email manual, bukan verified |
-| request_id | ID PENGAJUAN WEBSITE, TEXT | UUID idempotency |
-| details | DETAIL WEBSITE, PARAGRAPH_TEXT | JSON metadata, Maps dan persetujuan |
+---
 
-Opsi Lainnya: didukung sebagai pilihan literal `Lainnya`, atau built-in Other pada item yang mendukungnya. `validateSetup()` memeriksa hasil. Bila judul/opsi asli berbeda, verifikasi perbedaan terlebih dahulu; jangan diam-diam membuang jawaban.
+## 3. Konfigurasi Variabel Environment (`.env.local` & Netlify)
 
-## 4. Hubungkan website
+Aplikasi ini telah disederhanakan sehingga hanya membutuhkan **satu** variabel environment:
 
-1. Salin `.env.example` menjadi `.env.local` untuk lokal.
-2. Buat widget Cloudflare Turnstile dengan hostname localhost untuk uji dan domain aktual untuk produksi. Isi public site key dan server secret yang benar.
-3. Isi `APP_ORIGIN`, `APPS_SCRIPT_URL` dan `APPS_SCRIPT_SECRET` yang sama dengan Script Properties. `APP_ORIGIN` harus origin tepat; satu deployment satu origin. Jangan memakai wildcard.
-4. Buat `ADMIN_ACCESS_TOKEN` acak yang berbeda dari secret gateway. Contoh pembuat secret lokal: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Simpan di password manager; jangan commit atau mengirimkannya di chat.
-5. Turnstile wajib dan diverifikasi server (hostname/action); tidak ada bypass produksi atau kredensial dummy. Menjalankan tanpa konfigurasi hanya membuka pratinjau form, tidak mensimulasikan submit sukses.
-6. Untuk Netlify: impor repository GitHub Anda, Node 22+, `npm run build`, publish `.next`, gunakan runtime Next.js Netlify. Jangan static export. Tambahkan env vars melalui Netlify, lalu deploy ulang (site key publik di-bundle saat build).
-7. Gunakan HTTPS untuk produksi. Site bisa publik agar agent tidak login, sedangkan `/api/admin` hanya menerima kunci staf. UI admin boleh terbuka tetapi tidak ada data sebelum otorisasi.
+```env
+APPS_SCRIPT_URL=https://script.google.com/macros/s/ GANTI_DENGAN_DEPLOYMENT_ID /exec
+```
 
-## 5. Notifikasi email dan WhatsApp
+Variabel lama yang tidak diperlukan (`ADMIN_ACCESS_TOKEN`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, `APPS_SCRIPT_SECRET`, `APP_ORIGIN`) telah dihapus dari alur pengiriman pesanan standar.
 
-- `NOTIFY_EMAIL_TO`: alamat staf/HRD yang memang berwenang, dapat berupa satu alamat grup email atau beberapa email dipisah koma (maksimal 10). Tidak mengirim otomatis ke email pemesan yang belum terverifikasi. Default kosong = disabled.
-- Email hanya berisi kode, ID respons, dan tanggal permintaan; alamat properti, token akses, data pembayaran tidak dikirim ke grup.
-- Dashboard: status synced menjadi notifikasi belum dibaca; polling 60 detik selama dashboard terbuka; tombol Tandai dibaca dicatat di audit. Ini bukan push notification browser/background.
-- `WHATSAPP_ENABLED=false` secara bawaan. Untuk mengaktifkan: pengelola harus mengonfirmasi akun Cloud API resmi/akses yang sah, penerima opt-in, nomor bisnis, versi Graph yang masih didukung, dan template disetujui. Set flag konfirmasi hanya setelah pemeriksaan akun; source tidak dapat membuktikan kelayakan akun sendiri.
-- Adapter mengirim **template individual** dengan dua parameter body: kode pengajuan (`{{1}}`) dan tanggal (`{{2}}`). Sesuaikan nama/language template di Script Properties; buat template yang menyatakan pengajuan telah tercatat, bukan pembayaran berhasil.
-- Token WhatsApp hanya di Script Properties. Jangan menggunakan nomor pribadi sebagai bot WhatsApp Web. Grup WhatsApp biasa belum didukung dalam paket ini; Groups API memerlukan verifikasi terpisah dan implementasi khusus, bukan sekadar mengganti nomor penerima.
-- `accepted` berarti provider menerima permintaan; bukan bukti delivered/read. Email/WhatsApp tidak digunakan sebagai satu-satunya bukti bahwa laporan HRD sudah tercatat.
-
-## 6. Uji sebelum digunakan
-
-Mulai dengan salinan Form dan spreadsheet uji milik pengelola. Jalankan pengujian lengkap pada salinan, lalu ganti FORM_ID/ITEM_MAP_JSON ke Form asli yang telah disetujui. Lakukan satu pengajuan uji resmi bertanda jelas setelah izin pengelola. Verifikasi tab Responses, ID respons, sheet HRD yang terhubung, email dan dashboard. Jangan menganggap report HRD otomatis benar hanya karena script mengembalikan ID.
-
-Jika sistem HRD lama menggunakan `onFormSubmit`, Apps Script `FormResponse.submit()` tidak menyalakannya. Panggil pekerjaan HRD tambahan secara eksplisit setelah synced, sesuai kode lama yang telah diaudit; paket ini tidak mengarang atau mengubah proses internal HRD yang belum dilihat.
+### Pengaturan di Netlify:
+1. Buka dashboard site di **Netlify** → **Site configuration** → **Environment variables**.
+2. Tambahkan variabel:
+   - Key: `APPS_SCRIPT_URL`
+   - Value: `https://script.google.com/macros/s/.../exec`
+3. Trigger deploy ulang (**Deploy site**). Route `/api/orders` akan berjalan sebagai fungsi serverless yang memvalidasi data, mencegah duplikasi berdasarkan ID pengajuan unik (`id`), menerapkan pembatasan laju (*rate limit*), dan meneruskan pesanan ke Google Form melalui `APPS_SCRIPT_URL`.

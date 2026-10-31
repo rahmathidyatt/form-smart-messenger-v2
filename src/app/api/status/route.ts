@@ -1,7 +1,7 @@
 import {
-  appsScriptConfigured,
   bridge,
-  checkOriginIfConfigured,
+  checkOrigin,
+  configured,
   failure,
   readBody,
   ServiceError,
@@ -22,7 +22,7 @@ const lookupSchema = z.union([
 
 export async function POST(req: Request) {
   try {
-    checkOriginIfConfigured(req);
+    checkOrigin(req);
     const body = await readBody(req);
     const parsed = lookupSchema.safeParse(body);
     if (!parsed.success) throw new ServiceError("VALIDATION", 400);
@@ -41,7 +41,7 @@ export async function POST(req: Request) {
           prefillUrl: local.prefillUrl,
         });
       }
-      if (appsScriptConfigured()) {
+      if (configured()) {
         return success(await bridge("status", parsed.data));
       }
       throw new ServiceError("NOT_FOUND", 404);

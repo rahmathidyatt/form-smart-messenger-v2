@@ -1,10 +1,9 @@
 import {
-  appsScriptConfigured,
   bridge,
-  checkOriginIfConfigured,
+  checkOrigin,
+  configured,
   failure,
   readBody,
-  requireAdminIfConfigured,
   ServiceError,
   success,
 } from "@/lib/server/bridge";
@@ -20,12 +19,11 @@ const adminActionSchema = z.discriminatedUnion("action", [
 
 export async function POST(req: Request) {
   try {
-    checkOriginIfConfigured(req);
-    requireAdminIfConfigured(req);
+    checkOrigin(req);
     const parsed = adminActionSchema.safeParse(await readBody(req));
     if (!parsed.success) throw new ServiceError("VALIDATION", 400);
 
-    if (appsScriptConfigured()) {
+    if (configured()) {
       return success(await bridge(parsed.data.action, parsed.data));
     }
 

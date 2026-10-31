@@ -227,6 +227,64 @@ export async function forwardToGoogleFormDirect(order: OrderInput, requestId: st
   }
 }
 
+export function recordConfirmedOrder(params: {
+  id: string;
+  tokenHash: string;
+  order: OrderInput;
+  responseId: string;
+  updatedAt?: string;
+}): StoredOrderRecord {
+  const orders = loadOrders();
+  const existing = orders.find((o) => o.id === params.id);
+  if (existing) {
+    return existing;
+  }
+
+  const prefillUrl = buildPrefilledGoogleFormUrl({
+    ...params.order,
+    requestId: params.id,
+  });
+  const serviceObj = services.find((s) => s.id === params.order.task);
+  const taskLabel = serviceObj
+    ? serviceObj.label
+    : resolveGoogleFormTaskLabel(params.order.task);
+  const now = params.updatedAt || new Date().toISOString();
+
+  const record: StoredOrderRecord = {
+    id: params.id,
+    tokenHash: params.tokenHash,
+    state: "synced",
+    responseId: params.responseId,
+    createdAt: now,
+    updatedAt: now,
+    read: false,
+    name: params.order.code
+      ? `${params.order.name} (${params.order.code})`
+      : params.order.name,
+    code: params.order.code || "",
+    email: params.order.email,
+    unit: params.order.unit,
+    date: params.order.date,
+    address: params.order.address,
+    maps: params.order.maps || "",
+    taskId: params.order.task,
+    task: taskLabel,
+    other: params.order.other || "",
+    owner: params.order.owner as "YA" | "TIDAK",
+    prefillUrl,
+    syncMethod: "apps_script",
+    lastCode: "",
+    notifications: {
+      email: { state: "accepted" },
+      whatsapp: { state: "disabled" },
+    },
+  };
+
+  orders.unshift(record);
+  saveOrders(orders.slice(0, 200));
+  return record;
+}
+
 export async function recordAndSyncOrder(params: {
   id: string;
   tokenHash: string;

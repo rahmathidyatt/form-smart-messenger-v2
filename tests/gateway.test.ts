@@ -46,3 +46,63 @@ test('retry normalizes dash and blank to the same idempotent payload',()=>{const
 test('actual form checkbox task and owner produce single-choice arrays',()=>{for(const owner of ['YA','TIDAK']){const h=harness();h.items[4].getType=()=> 'CHECKBOX';h.items[6].getType=()=> 'CHECKBOX';const result=h.api.submit_({...h.request,order:{...order,owner}});assert.equal(result.state,'synced');assert.equal(JSON.stringify(h.responses[0].getResponseForItem(h.items[4]).getResponse()),JSON.stringify(['Pasang banner']));assert.equal(JSON.stringify(h.responses[0].getResponseForItem(h.items[6]).getResponse()),JSON.stringify([owner]));}});
 
 test('free-text agent identity is submitted exactly as typed and remains idempotent',()=>{const h=harness();const request={...h.request,order:{...order,name:'Rahmat / ABCD',code:'',address:'Blok A1'}};assert.equal(h.api.submit_(request).state,'synced');assert.equal(h.responses[0].getResponseForItem(h.items[0]).getResponse(),'Rahmat / ABCD');h.api.submit_(request);assert.equal(h.state.submitCalls,1);});
+
+test('direct doPost without APPS_SCRIPT_SECRET or LEDGER_SPREADSHEET_ID submits to 7-question Google Form and prevents duplicates',()=>{
+ const h=harness();
+ delete h.props.APPS_SCRIPT_SECRET;
+ delete h.props.LEDGER_SPREADSHEET_ID;
+ delete h.props.ITEM_MAP_JSON;
+ delete h.props.PUBLIC_EMAIL_POLICY_APPROVED;
+ const defaultEntries=Object.values(h.api.itemMap_()) as Array<{id:number;title:string}>;
+ const sevenTypes=['TEXT','LIST','DATE','PARAGRAPH_TEXT','CHECKBOX','PARAGRAPH_TEXT','CHECKBOX'];
+ const sevenItems=defaultEntries.map((entry,i)=>{
+  const item:any={
+   getId:()=>entry.id,
+   getTitle:()=>entry.title,
+   getType:()=>sevenTypes[i],
+   isRequired:()=>i!==5,
+   includesYear:()=>true,
+   hasOtherOption:()=>true,
+   getChoices:()=>i===1?[{getValue:()=>'VISION'}]:i===4?[{getValue:()=>'Pasang banner'}]:i===6?[{getValue:()=>'YA'},{getValue:()=>'TIDAK'}]:[],
+   createResponse:(value:unknown)=>({getItem:()=>item,getResponse:()=>value})
+  };
+  for(const m of ['asTextItem','asListItem','asDateItem','asParagraphTextItem','asMultipleChoiceItem','asCheckboxItem'])item[m]=()=>item;
+  return item;
+ });
+ h.items.splice(0,h.items.length,...sevenItems);
+ (h.api.FormApp as any).openById=()=>({
+  getItems:()=>sevenItems,
+  getItemById:(id:number)=>sevenItems.find(it=>it.getId()===id)||null,
+  isAcceptingResponses:()=>true,
+  getResponses:()=>h.responses,
+  createResponse:()=>{
+   const answers:any[]=[];
+   const response:any={
+    withItemResponse:(a:any)=>{answers.push(a);return response;},
+    getId:()=>response.id,
+    getResponseForItem:(item:any)=>answers.find(a=>a.getItem().getId()===item.getId())??null,
+    submit:()=>{h.state.submitCalls++;response.id='gf-7q-'+h.state.submitCalls;h.responses.push(response);return response;}
+   };
+   return response;
+  }
+ });
+
+ const res1=h.api.doPost({postData:{contents:JSON.stringify({action:'submit',data:h.request})}});
+ assert.equal(res1.ok,true);
+ assert.equal(res1.data.state,'synced');
+ assert.equal(res1.data.responseId,'gf-7q-1');
+ assert.equal(h.state.submitCalls,1);
+
+ // Duplicate submission with same ID returns existing synced response without re-submitting
+ const res2=h.api.doPost({postData:{contents:JSON.stringify({action:'submit',data:h.request})}});
+ assert.equal(res2.ok,true);
+ assert.equal(res2.data.responseId,'gf-7q-1');
+ assert.equal(h.state.submitCalls,1);
+});
+
+test('openForm_ rejects public responder ID starting with 1FAIpQL',()=>{
+ const h=harness();
+ h.props.FORM_ID='1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg';
+ assert.throws(()=>h.api.openForm_(),/PUBLIC_FORM_ID_NOT_ALLOWED/);
+});
+

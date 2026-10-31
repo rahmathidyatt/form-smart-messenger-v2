@@ -7,12 +7,8 @@ import { services, TARIFF_RULES } from "./catalog";
  * https://docs.google.com/forms/d/e/1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg/viewform
  */
 export const GOOGLE_FORM_CONFIG = {
-  shortUrl:
-    process.env.NEXT_PUBLIC_GOOGLE_FORM_SHORT_URL ||
-    "https://forms.gle/DYqwvwHXGxERZihD7",
-  formId:
-    process.env.NEXT_PUBLIC_GOOGLE_FORM_ID ||
-    "1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg",
+  shortUrl: "https://forms.gle/DYqwvwHXGxERZihD7",
+  formId: "1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg",
   get viewUrl() {
     return `https://docs.google.com/forms/d/e/${this.formId}/viewform`;
   },
