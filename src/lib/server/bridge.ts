@@ -153,15 +153,18 @@ export function checkOrigin(req: Request) {
   try {
     const reqUrl = new URL(req.url);
     const originUrl = new URL(originHeader);
+    if (
+      originUrl.hostname === "localhost" ||
+      originUrl.hostname === "127.0.0.1" ||
+      originUrl.hostname === "0.0.0.0"
+    ) {
+      return;
+    }
     const hostHeader =
       req.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
       req.headers.get("host")?.trim();
     const expectedHost = hostHeader || reqUrl.host;
-    if (!expectedHost) return;
-
-    const norm = (h: string) =>
-      h.replace(/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i, "loopback$2");
-    if (norm(originUrl.host) !== norm(expectedHost)) {
+    if (expectedHost && originUrl.host !== expectedHost) {
       throw new ServiceError("ORIGIN", 403);
     }
   } catch (e) {

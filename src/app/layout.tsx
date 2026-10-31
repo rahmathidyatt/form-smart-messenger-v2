@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Plus_Jakarta_Sans, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
 import { Navigation } from "@/components/navigation";
-import { GOOGLE_FORM_CONFIG } from "@/lib/google-form";
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -59,23 +58,12 @@ export default function Layout({
               <Link href="/" className="hover:text-slate-900 transition-colors">
                 Formulir Order
               </Link>
-              <Link href="/riwayat" className="hover:text-slate-900 transition-colors">
-                Riwayat & Status
-              </Link>
               <Link href="/ketentuan" className="hover:text-slate-900 transition-colors">
                 Ketentuan & Tarif
               </Link>
               <Link href="/admin" className="hover:text-slate-900 transition-colors">
                 Panel Staf
               </Link>
-              <a
-                href={GOOGLE_FORM_CONFIG.shortUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:text-slate-900 transition-colors font-medium text-slate-700"
-              >
-                Google Form Resmi ↗
-              </a>
             </div>
           </div>
         </footer>

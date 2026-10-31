@@ -1,39 +1,33 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
-  ArrowRight,
   Check,
   CheckCircle2,
   ClipboardCheck,
   Copy,
-  ExternalLink,
   FileCheck2,
   Info,
   Loader2,
   MapPin,
   RotateCcw,
-  Search,
   Send,
-  Sparkles,
   UserCheck,
 } from "lucide-react";
 import { agentFormSchema, type AgentFormInput } from "@/lib/agent-form";
-import { services, TARIFF_RULES, units } from "@/lib/catalog";
-import {
-  buildPrefilledGoogleFormUrl,
-  calculateTariffEstimate,
-  formatOtherNotesForGoogleForm,
-  resolveGoogleFormTaskLabel,
-} from "@/lib/google-form";
+import { services, units } from "@/lib/catalog";
+import { resolveGoogleFormTaskLabel } from "@/lib/google-form";
 import { receiptSchema, type OrderInput, type Receipt } from "@/lib/submission";
-import { jakartaDate, rupiah } from "@/lib/utils";
-import { TariffCalculator } from "@/components/tariff-calculator";
+import { jakartaDate } from "@/lib/utils";
+import {
+  ToastNotification,
+  type ToastMessage,
+} from "@/components/toast-notification";
 
 const storageKey = "smart-messenger-pending-v3";
+const draftStorageKey = "smart-messenger-draft-v3";
 const localHistoryKey = "smart-messenger-history-v3";
 
 const initial: AgentFormInput = {
@@ -55,13 +49,7 @@ interface SubmittedReceiptState {
   id: string;
   responseId: string;
   updatedAt: string;
-  prefillUrl: string;
-  syncMethod: string;
   order: OrderInput;
-  estimatedCost: number;
-  roundTripKm: number;
-  bannerCount: number;
-  bannerHeight: number;
 }
 
 function addDaysToJakartaDate(daysToAdd: number): string {
@@ -69,6 +57,142 @@ function addDaysToJakartaDate(daysToAdd: number): string {
   const d = new Date(`${base}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + daysToAdd);
   return d.toISOString().slice(0, 10);
+}
+
+function sanitizeDraft(raw: unknown): AgentFormInput | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const str = (key: keyof AgentFormInput) =>
+    typeof obj[key] === "string" ? (obj[key] as string) : "";
+  const draft: AgentFormInput = {
+    email: str("email"),
+    nameCode: str("nameCode"),
+    unit: str("unit"),
+    date: str("date"),
+    address: str("address"),
+    maps: str("maps"),
+    task: str("task"),
+    other: str("other"),
+    owner: str("owner"),
+    consent: Boolean(obj.consent),
+  };
+  const hasAnyValue =
+    Boolean(draft.email) ||
+    Boolean(draft.nameCode) ||
+    Boolean(draft.unit) ||
+    Boolean(draft.date) ||
+    Boolean(draft.address) ||
+    Boolean(draft.maps) ||
+    Boolean(draft.task) ||
+    Boolean(draft.other) ||
+    Boolean(draft.owner) ||
+    draft.consent;
+  return hasAnyValue ? draft : null;
+}
+
+/**
+ * Custom hook that persists form inputs into localStorage so agent data
+ * survives accidental page refreshes or navigation away from the form.
+ */
+function useFormDraftPersistence(params: {
+  watchedValues: Partial<AgentFormInput>;
+  reset: (values: AgentFormInput) => void;
+  attemptRef: React.MutableRefObject<Attempt | null>;
+}) {
+  const { watchedValues, reset, attemptRef } = params;
+  const hydratedRef = useRef(false);
+
+  const email = watchedValues.email ?? "";
+  const nameCode = watchedValues.nameCode ?? "";
+  const unit = watchedValues.unit ?? "";
+  const date = watchedValues.date ?? "";
+  const address = watchedValues.address ?? "";
+  const maps = watchedValues.maps ?? "";
+  const task = watchedValues.task ?? "";
+  const other = watchedValues.other ?? "";
+  const owner = watchedValues.owner ?? "";
+  const consent = Boolean(watchedValues.consent);
+
+  // Restore saved draft from localStorage (or pending attempt from sessionStorage) on mount
+  useEffect(() => {
+    try {
+      const rawDraft = localStorage.getItem(draftStorageKey);
+      if (rawDraft) {
+        const parsedDraft = sanitizeDraft(JSON.parse(rawDraft));
+        if (parsedDraft) {
+          reset(parsedDraft);
+        }
+      } else {
+        const rawPending = sessionStorage.getItem(storageKey);
+        if (rawPending) {
+          const saved = JSON.parse(rawPending);
+          if (receiptSchema.safeParse(saved?.receipt).success && saved?.order) {
+            const { name, code, ...rest } = saved.order;
+            const ui = sanitizeDraft({
+              ...rest,
+              nameCode: code ? `${name} ${code}` : name,
+            });
+            if (ui) {
+              attemptRef.current = saved;
+              reset(ui);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore storage access errors
+    } finally {
+      hydratedRef.current = true;
+    }
+  }, [reset, attemptRef]);
+
+  // Persist user input changes to localStorage
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const currentDraft: AgentFormInput = {
+      email,
+      nameCode,
+      unit,
+      date,
+      address,
+      maps,
+      task,
+      other,
+      owner,
+      consent,
+    };
+    try {
+      if (sanitizeDraft(currentDraft)) {
+        localStorage.setItem(draftStorageKey, JSON.stringify(currentDraft));
+      } else {
+        localStorage.removeItem(draftStorageKey);
+      }
+    } catch {
+      // Ignore localStorage quota/access errors
+    }
+  }, [
+    email,
+    nameCode,
+    unit,
+    date,
+    address,
+    maps,
+    task,
+    other,
+    owner,
+    consent,
+  ]);
+
+  const clearPersistedDraft = () => {
+    try {
+      localStorage.removeItem(draftStorageKey);
+      sessionStorage.removeItem(storageKey);
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  return { clearPersistedDraft };
 }
 
 export function Brand() {
@@ -83,23 +207,18 @@ export function Brand() {
         </span>
       </div>
       <span className="text-xs font-semibold text-slate-600">
-        Formulir Terpadu
+        Formulir Pemesanan
       </span>
     </div>
-  );
+   );
 }
 
-export function SimpleForm({ ready = true }: { ready?: boolean }) {
+export function SimpleForm() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [sentReceipt, setSentReceipt] = useState<SubmittedReceiptState | null>(null);
   const [copiedWa, setCopiedWa] = useState(false);
-
-  // Interactive calculator & helper state
-  const [unitSearch, setUnitSearch] = useState("");
-  const [roundTripKm, setRoundTripKm] = useState(10);
-  const [bannerCount, setBannerCount] = useState(2);
-  const [bannerHeight, setBannerHeight] = useState(2.5);
 
   const attempt = useRef<Attempt | null>(null);
   const inFlight = useRef(false);
@@ -129,81 +248,12 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
   const watchedValues = useWatch({ control });
   const task = watchedValues.task || "";
   const owner = watchedValues.owner || "";
-  const selectedUnit = watchedValues.unit || "";
-  const hasBanner = task === "banner";
 
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(storageKey);
-      if (!raw) return;
-      const saved = JSON.parse(raw);
-      if (!receiptSchema.safeParse(saved.receipt).success) return;
-      const { name, code, ...rest } = saved.order;
-      const ui = { ...rest, nameCode: code ? `${name} ${code}` : name };
-      if (!agentFormSchema.safeParse(ui).success) return;
-      attempt.current = saved;
-      reset(ui);
-    } catch {
-      // Ignore storage access errors
-    }
-  }, [reset]);
-
-  const filteredUnits = units.filter(
-    (u) =>
-      !unitSearch.trim() ||
-      u.toLowerCase().includes(unitSearch.trim().toLowerCase()) ||
-      u === selectedUnit
-  );
-
-  const applyScenarioPreset = (preset: "banner" | "mou" | "keys") => {
-    setMessage("");
-    setSentReceipt(null);
-    if (preset === "banner") {
-      setRoundTripKm(14);
-      setBannerCount(2);
-      setBannerHeight(2.5);
-      reset({
-        email: "rahmat.agent@brighton.co.id",
-        nameCode: "Rahmat Hidayat (PA-208)",
-        unit: "VISION",
-        date: addDaysToJakartaDate(1),
-        address: "Cluster Boston Blok B4 No. 12, Kota Wisata Cibubur, Gunung Putri",
-        maps: "https://maps.app.goo.gl/cibuburwisata12",
-        task: "banner",
-        other: "Pasang 2 banner di pagar depan dan balkon lantai 1",
-        owner: "YA",
-        consent: true,
-      });
-    } else if (preset === "mou") {
-      setRoundTripKm(18);
-      reset({
-        email: "siti.rahma@brighton.co.id",
-        nameCode: "Siti Rahmawati (PA-118)",
-        unit: "CROWN",
-        date: addDaysToJakartaDate(1),
-        address: "Legenda Wisata Zona Cleopatra Blok C2 No. 8, Cibubur",
-        maps: "https://maps.google.com/?q=-6.3712,106.9521",
-        task: "mou",
-        other: "Antar dokumen MoU transaksi untuk ditandatangani pemilik pukul 14.00 WIB",
-        owner: "YA",
-        consent: true,
-      });
-    } else {
-      setRoundTripKm(8);
-      reset({
-        email: "hendrik.wijaya@brighton.co.id",
-        nameCode: "Hendrik Wijaya (PA-772)",
-        unit: "MASTERPIECE",
-        date: addDaysToJakartaDate(2),
-        address: "CitraGran Cibubur Cluster Brentwood Blok H1 No. 5",
-        maps: "-",
-        task: "keys",
-        other: "Ambil kunci properti di pos sekuriti atas nama Pak Budi",
-        owner: "TIDAK",
-        consent: true,
-      });
-    }
-  };
+  const { clearPersistedDraft } = useFormDraftPersistence({
+    watchedValues,
+    reset,
+    attemptRef: attempt,
+  });
 
   async function request(path: string, body: unknown) {
     const res = await fetch(path, {
@@ -222,26 +272,11 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
     setBusy(true);
     setSentReceipt(null);
     setMessage("");
-
-    // Enrich `other` with banner/distance info if task is banner and user used the calculator
-    const enrichedOther = formatOtherNotesForGoogleForm({
-      name: order.name,
-      code: order.code,
-      unit: order.unit,
-      date: order.date,
-      address: order.address,
-      maps: order.maps,
-      task: order.task,
-      other: order.other,
-      owner: order.owner,
-      banners: order.task === "banner" ? bannerCount : undefined,
-      height: order.task === "banner" ? bannerHeight : undefined,
-      estimatedKm: roundTripKm > 0 ? roundTripKm : undefined,
-    });
+    setToast(null);
 
     const finalOrder: OrderInput = {
       ...order,
-      other: enrichedOther.slice(0, 1000),
+      other: (order.other || "").trim().slice(0, 1000),
     };
 
     let current = attempt.current;
@@ -267,26 +302,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
       // Ignore sessionStorage failure
     }
 
-    const tariff = calculateTariffEstimate({
-      roundTripKm,
-      hasBanner: finalOrder.task === "banner",
-      bannerCount,
-      bannerHeightMeters: bannerHeight,
-    });
-
-    const fallbackPrefillUrl = buildPrefilledGoogleFormUrl({
-      name: finalOrder.name,
-      code: finalOrder.code,
-      email: finalOrder.email,
-      unit: finalOrder.unit,
-      date: finalOrder.date,
-      address: finalOrder.address,
-      maps: finalOrder.maps,
-      task: finalOrder.task,
-      other: finalOrder.other,
-      owner: finalOrder.owner,
-    });
-
     try {
       const data = await request("/api/orders", {
         ...current.receipt,
@@ -299,17 +314,11 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
           id: data.data.id || current.receipt.id,
           responseId: data.data.responseId,
           updatedAt: data.data.updatedAt || new Date().toISOString(),
-          prefillUrl: data.data.prefillUrl || fallbackPrefillUrl,
-          syncMethod: data.data.syncMethod || "apps_script",
           order: finalOrder,
-          estimatedCost: tariff.totalEstimatedCost,
-          roundTripKm,
-          bannerCount: finalOrder.task === "banner" ? bannerCount : 0,
-          bannerHeight: finalOrder.task === "banner" ? bannerHeight : 0,
         };
 
         try {
-          sessionStorage.removeItem(storageKey);
+          clearPersistedDraft();
           const prev = JSON.parse(localStorage.getItem(localHistoryKey) || "[]");
           localStorage.setItem(
             localHistoryKey,
@@ -322,37 +331,55 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
         attempt.current = null;
         setSentReceipt(receiptRecord);
         setMessage("");
+        setToast({
+          id: receiptRecord.id,
+          type: "success",
+          title: "Berhasil dikirim",
+          description: `Pesanan berhasil dikirim (${receiptRecord.responseId}). Formulir telah direset otomatis.`,
+        });
         reset(initial);
         return;
       }
 
       const errorMessages: Record<string, string> = {
         NOT_CONFIGURED:
-          "Koneksi Google Apps Script (APPS_SCRIPT_URL) belum dikonfigurasi pada server. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
+          "Layanan pengiriman belum aktif pada server. Data formulir Anda tetap tersimpan dan siap dikirim ulang.",
         CONFIG:
-          "Konfigurasi Google Apps Script belum lengkap (pastikan FORM_ID internal sudah diisi di Script Properties). Data formulir Anda tetap tersimpan.",
+          "Konfigurasi layanan belum lengkap. Data formulir Anda tetap tersimpan.",
         PUBLIC_FORM_ID_NOT_ALLOWED:
-          "FORM_ID pada Google Apps Script menggunakan ID publik (/d/e/1FAIpQL...). Gunakan ID internal dari URL editor Google Form (/forms/d/<FORM_ID>/edit).",
+          "Konfigurasi ID formulir belum sesuai. Silakan hubungi staf operasional cabang.",
         FORM_SCHEMA:
-          "Struktur pertanyaan Google Form tidak sesuai dengan pemetaan item. Jalankan validateSetup() di Google Apps Script.",
+          "Struktur formulir sedang diperbarui. Data Anda tetap tersimpan.",
         FORM_CLOSED:
-          "Google Form saat ini sedang ditutup untuk menerima respons baru.",
+          "Formulir pemesanan saat ini sedang ditutup untuk menerima respons baru.",
         VALIDATION: "Periksa kembali kolom yang wajib diisi.",
         RATE_LIMIT: "Terlalu banyak permintaan. Silakan coba lagi dalam 15 menit.",
         CONFLICT: "Pesanan ini sedang diproses atau sudah dikirim sebelumnya.",
         UPSTREAM_UNKNOWN:
-          "Gagal mengirim ke Google Forms. Pastikan Web App Google Apps Script di-deploy dengan akses Anyone (Siapa saja), lalu coba lagi.",
+          "Gagal mengirim pesanan. Periksa koneksi Anda, lalu coba kirim kembali.",
       };
 
       const code = typeof data?.code === "string" ? data.code : "UPSTREAM_UNKNOWN";
-      setMessage(
+      const errText =
         errorMessages[code] ||
-          "Pengiriman ke Google Forms belum berhasil. Data formulir Anda tetap tersimpan, silakan coba lagi."
-      );
+        "Pengiriman pesanan belum berhasil. Data formulir Anda tetap tersimpan, silakan coba lagi.";
+      setMessage(errText);
+      setToast({
+        id: crypto.randomUUID(),
+        type: "error",
+        title: "Pengiriman Gagal",
+        description: errText,
+      });
     } catch {
-      setMessage(
-        "Koneksi jaringan terganggu saat menghubungi server. Data formulir Anda tetap tersimpan, silakan coba kirim kembali."
-      );
+      const netErrText =
+        "Koneksi jaringan terganggu saat menghubungi server. Data formulir Anda tetap tersimpan, silakan coba kirim kembali.";
+      setMessage(netErrText);
+      setToast({
+        id: crypto.randomUUID(),
+        type: "error",
+        title: "Pengiriman Gagal",
+        description: netErrText,
+      });
     } finally {
       setBusy(false);
       inFlight.current = false;
@@ -378,25 +405,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
     };
   }
 
-  const liveFormSnapshot = {
-    name: watchedValues.nameCode || "",
-    email: watchedValues.email || "",
-    unit: watchedValues.unit || "",
-    date: watchedValues.date || "",
-    address: watchedValues.address || "",
-    maps: watchedValues.maps || "",
-    task: watchedValues.task || "",
-    other: watchedValues.other || "",
-    owner: watchedValues.owner || "",
-  };
-
-  const livePrefillUrl = buildPrefilledGoogleFormUrl({
-    ...liveFormSnapshot,
-    banners: hasBanner ? bannerCount : undefined,
-    height: hasBanner ? bannerHeight : undefined,
-    estimatedKm: roundTripKm > 0 ? roundTripKm : undefined,
-  });
-
   const handleCopyWhatsAppReceipt = async (receipt: SubmittedReceiptState) => {
     const text = [
       `*KONFIRMASI ORDER SMART MESSENGER - BRIGHTON HUB CIBUBUR*`,
@@ -409,7 +417,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
       receipt.order.maps ? `Maps: ${receipt.order.maps}` : null,
       receipt.order.other ? `Catatan: ${receipt.order.other}` : null,
       `Konfirmasi Owner: ${receipt.order.owner}`,
-      `Estimasi Tarif (${receipt.roundTripKm} km PP): ${rupiah(receipt.estimatedCost)}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -424,38 +431,33 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
-      {/* Hero Section & Regional Trust Signal */}
-      <section className="bg-slate-900 text-white rounded-2xl p-6 sm:p-8 lg:p-10 mb-8 border border-slate-800">
-        <div className="max-w-3xl">
-          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-amber-400 mb-3">
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
+      <ToastNotification toast={toast} onDismiss={() => setToast(null)} />
+
+      {/* Header Section */}
+      <section className="bg-slate-900 text-white rounded-2xl p-6 sm:p-8 mb-6 border border-slate-800">
+        <div>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-amber-400 mb-2.5">
             <span>Brighton HUB Cibubur</span>
             <span aria-hidden="true">·</span>
-            <span>Sistem Order & Kalkulator Smart Messenger</span>
-            <span aria-hidden="true">·</span>
-            <span>Terhubung ke Google Form HRD</span>
+            <span>Layanan Operasional Smart Messenger</span>
           </div>
           <h1
-            className="text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight text-white leading-tight"
+            className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white leading-tight"
             style={{ textWrap: "balance" }}
           >
-            Form Order Smart Messenger & Simulasi Tarif Lapangan
+            Form Order Smart Messenger
           </h1>
-          <p className="mt-3 text-sm sm:text-base text-slate-300 leading-relaxed max-w-2xl">
+          <p className="mt-2.5 text-sm text-slate-300 leading-relaxed">
             Ajukan pemasangan banner properti, pengiriman MoU transaksi, pengambilan
-            kunci klien, atau distribusi dokumen PA. Terintegrasi langsung dengan{" "}
-            <span className="text-white font-medium">
-              Google Form Smart Messenger Brighton HUB Cibubur
-            </span>{" "}
-            tanpa perlu login tambahan.
+            kunci klien, atau distribusi dokumen PA.
           </p>
         </div>
 
-        {/* Full-Width 4-Column Operational KPI Strip */}
-        <div className="mt-8 pt-6 border-t border-slate-800 grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+        <div className="mt-6 pt-5 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <span className="text-xs text-slate-400 block">Tarif Perjalanan PP</span>
-            <strong className="font-mono tabular-nums text-lg sm:text-xl font-bold text-amber-400 mt-0.5 block">
+            <strong className="font-mono tabular-nums text-lg font-bold text-amber-400 mt-0.5 block">
               Rp900 / km
             </strong>
             <span className="text-[11px] text-slate-400">
@@ -464,29 +466,11 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
           </div>
           <div>
             <span className="text-xs text-slate-400 block">Jasa Pasang Banner</span>
-            <strong className="font-mono tabular-nums text-lg sm:text-xl font-bold text-white mt-0.5 block">
+            <strong className="font-mono tabular-nums text-lg font-bold text-white mt-0.5 block">
               +Rp5.000 / banner
             </strong>
             <span className="text-[11px] text-slate-400">
               Maks. jarak 25 km & tinggi 4 meter
-            </span>
-          </div>
-          <div>
-            <span className="text-xs text-slate-400 block">Cakupan Unit Cabang</span>
-            <strong className="font-mono tabular-nums text-lg sm:text-xl font-bold text-white mt-0.5 block">
-              31 Unit Aktif
-            </strong>
-            <span className="text-[11px] text-slate-400">
-              AKASIA hingga WISDOM & CIRCLE
-            </span>
-          </div>
-          <div>
-            <span className="text-xs text-slate-400 block">Koneksi Google Form</span>
-            <strong className="font-mono tabular-nums text-lg sm:text-xl font-bold text-emerald-400 mt-0.5 block">
-              7 Kolom Resmi
-            </strong>
-            <span className="text-[11px] text-slate-400">
-              Sinkronisasi langsung & tautan pre-fill
             </span>
           </div>
         </div>
@@ -499,9 +483,9 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
           ref={receiptRef}
           role="status"
           aria-live="polite"
-          className="mb-8 bg-white border-2 border-emerald-500 rounded-2xl p-6 sm:p-8 shadow-xs scroll-mt-20"
+          className="mb-6 bg-white border-2 border-emerald-500 rounded-2xl p-6 shadow-xs scroll-mt-20"
         >
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-200">
             <div className="flex items-start gap-3.5">
               <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
                 <CheckCircle2 className="w-6 h-6" aria-hidden="true" />
@@ -514,47 +498,35 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
                     {sentReceipt.responseId}
                   </span>
                 </div>
-                <h2 className="text-xl font-bold text-slate-900 mt-0.5">
+                <h2 className="text-lg font-bold text-slate-900 mt-0.5">
                   Berhasil dikirim — Bukti Pengajuan Smart Messenger
                 </h2>
                 <p className="text-xs text-slate-600 mt-1">
-                  Data pesanan telah berhasil dikirim ke Google Forms resmi HRD dan
-                  formulir telah direset secara otomatis.
+                  Data pesanan telah berhasil dikirim dan formulir telah direset secara otomatis.
                 </p>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <a
-                href={sentReceipt.prefillUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap"
-              >
-                <span>Buka & Kirim di Google Form (Terisi Otomatis)</span>
-                <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
-              </a>
-              <button
-                type="button"
-                onClick={() => handleCopyWhatsAppReceipt(sentReceipt)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap"
-              >
-                {copiedWa ? (
-                  <>
-                    <Check className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Format WA Tersalin</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>Salin Pesan Konfirmasi Staf</span>
-                  </>
-                )}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => handleCopyWhatsAppReceipt(sentReceipt)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors whitespace-nowrap self-start sm:self-center"
+            >
+              {copiedWa ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Format WA Tersalin</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Salin Pesan Konfirmasi Staf</span>
+                </>
+              )}
+            </button>
           </div>
 
-          <dl className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+          <dl className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
               <dt className="text-slate-500 font-medium">Nama & Kode Agent</dt>
               <dd className="text-slate-900 font-bold text-sm mt-1">
@@ -580,17 +552,6 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
                 Konfirmasi Owner: <strong>{sentReceipt.order.owner}</strong>
               </dd>
             </div>
-            <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200">
-              <dt className="text-amber-900 font-medium">
-                Estimasi Biaya ({sentReceipt.roundTripKm} km PP)
-              </dt>
-              <dd className="font-mono tabular-nums text-slate-900 font-extrabold text-base mt-1">
-                {rupiah(sentReceipt.estimatedCost)}
-              </dd>
-              <dd className="text-[11px] text-amber-800 mt-0.5">
-                Menunggu verifikasi jarak staf cabang
-              </dd>
-            </div>
           </dl>
 
           <div className="mt-5 pt-4 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
@@ -602,16 +563,10 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
               </span>
             </div>
             <div className="flex items-center gap-4">
-              <Link
-                href="/riwayat"
-                className="font-semibold text-slate-900 hover:underline inline-flex items-center gap-1"
-              >
-                <span>Lihat di Riwayat & Status</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
               <button
                 type="button"
                 onClick={() => {
+                  clearPersistedDraft();
                   reset(initial);
                   setSentReceipt(null);
                 }}
@@ -624,623 +579,381 @@ export function SimpleForm({ ready = true }: { ready?: boolean }) {
         </section>
       )}
 
-      {/* Main 2-Column Interactive Workspace */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column: Dynamic Order Form (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Quick Preset Bar for Instant Interactive Testing */}
-          <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-              <Sparkles className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
-              <span>Isi Cepat Contoh Penugasan:</span>
+      {/* Agent Order Form */}
+      <form
+        noValidate
+        aria-busy={isSubmittingOrder}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (inFlight.current || isSubmittingOrder) return;
+          void handleSubmit(submit)(event);
+        }}
+        className="space-y-6"
+      >
+        <fieldset disabled={isSubmittingOrder} className="space-y-6">
+          {/* Data Pemesan & Unit */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6">
+            <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
+              <h2 className="text-base font-bold text-slate-900">
+                Data Pemesan & Unit Brighton
+              </h2>
+              <UserCheck className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                disabled={isSubmittingOrder}
-                onClick={() => applyScenarioPreset("banner")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
-              >
-                Contoh Pasang Banner
-              </button>
-              <button
-                type="button"
-                disabled={isSubmittingOrder}
-                onClick={() => applyScenarioPreset("mou")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
-              >
-                Contoh Antar MoU
-              </button>
-              <button
-                type="button"
-                disabled={isSubmittingOrder}
-                onClick={() => applyScenarioPreset("keys")}
-                className="px-2.5 py-1.5 text-xs font-medium bg-slate-100 hover:bg-amber-100 hover:text-slate-900 text-slate-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors whitespace-nowrap"
-              >
-                Contoh Kunci Properti
-              </button>
-            </div>
-          </div>
 
-          {!ready && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 text-xs text-amber-900">
-              <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <p>
-                Variabel <code className="font-mono font-semibold">APPS_SCRIPT_URL</code>{" "}
-                belum diatur pada server. Pasang Web App Google Apps Script dan isi{" "}
-                <code className="font-mono font-semibold">APPS_SCRIPT_URL</code> agar
-                pengiriman otomatis ke Google Forms aktif, atau gunakan tombol{" "}
-                <strong>Buka di Google Form</strong> di bawah.
-              </p>
-            </div>
-          )}
-
-          <form
-            noValidate
-            aria-busy={isSubmittingOrder}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (inFlight.current || isSubmittingOrder) return;
-              void handleSubmit(submit)(event);
-            }}
-            className="space-y-6"
-          >
-            <fieldset disabled={isSubmittingOrder} className="space-y-6">
-              {/* Section 01: Data Pemesan & Unit */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
-                  <div>
-                    <span className="text-xs font-semibold text-amber-700">
-                      01. IDENTITAS AGENT
-                    </span>
-                    <h2 className="text-lg font-bold text-slate-900 mt-0.5">
-                      Data Pemesan & Unit Brighton
-                    </h2>
-                  </div>
-                  <UserCheck className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
-                </div>
-
-                <div className="mt-5 space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label
-                        htmlFor="nameCode"
-                        className="block text-xs font-semibold text-slate-800 mb-1.5"
-                      >
-                        Nama dan Kode Agent <span className="text-red-600">*</span>
-                      </label>
-                      <input
-                        id="nameCode"
-                        type="text"
-                        placeholder="Contoh: Rahmat Hidayat (PA-208)"
-                        className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
-                        {...register("nameCode")}
-                        {...a11y("nameCode")}
-                      />
-                      {err("nameCode")}
-                    </div>
-
-                    <div>
-                      <label
-                        htmlFor="email"
-                        className="block text-xs font-semibold text-slate-800 mb-1.5"
-                      >
-                        Email Pemesan <span className="text-red-600">*</span>
-                      </label>
-                      <input
-                        id="email"
-                        type="email"
-                        autoComplete="email"
-                        placeholder="nama.agent@brighton.co.id"
-                        className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
-                        {...register("email")}
-                        {...a11y("email")}
-                      />
-                      {err("email")}
-                    </div>
-                  </div>
-
-                  {/* Interactive Unit Selector with Search Filter */}
-                  <div>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                      <label
-                        htmlFor="unit"
-                        className="block text-xs font-semibold text-slate-800"
-                      >
-                        Unit Brighton <span className="text-red-600">*</span>
-                      </label>
-                      <div className="relative w-full sm:w-56">
-                        <Search
-                          className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
-                          aria-hidden="true"
-                        />
-                        <input
-                          type="search"
-                          aria-label="Cari nama unit Brighton"
-                          placeholder="Filter 31 unit (mis. VISION)..."
-                          value={unitSearch}
-                          onChange={(e) => setUnitSearch(e.target.value)}
-                          className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-800 placeholder:text-slate-400"
-                        />
-                      </div>
-                    </div>
-
-                    <select
-                      id="unit"
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
-                      {...register("unit")}
-                      {...a11y("unit")}
-                    >
-                      <option value="">Pilih unit Brighton (31 unit)</option>
-                      {units.map((u) => (
-                        <option key={u} value={u}>
-                          {u}
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* Interactive Quick-Tap Unit Grid */}
-                    <div
-                      aria-label="Pilihan cepat unit Brighton"
-                      className="mt-2.5 flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-2 bg-slate-50 border border-slate-200/80 rounded-lg"
-                    >
-                      {filteredUnits.map((u) => {
-                        const active = selectedUnit === u;
-                        return (
-                          <button
-                            key={u}
-                            type="button"
-                            onClick={() =>
-                              setValue("unit", u, {
-                                shouldValidate: true,
-                                shouldDirty: true,
-                              })
-                            }
-                            className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                              active
-                                ? "bg-slate-900 text-amber-400 shadow-2xs"
-                                : "bg-white text-slate-700 border border-slate-200/80 hover:border-slate-400"
-                            }`}
-                          >
-                            {u}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {err("unit")}
-                  </div>
-                </div>
-              </section>
-
-              {/* Section 02: Jadwal & Lokasi Penugasan */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
-                  <div>
-                    <span className="text-xs font-semibold text-amber-700">
-                      02. LOKASI & JADWAL LAPANGAN
-                    </span>
-                    <h2 className="text-lg font-bold text-slate-900 mt-0.5">
-                      Tanggal & Alamat Lengkap Penugasan
-                    </h2>
-                  </div>
-                  <MapPin className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
-                </div>
-
-                <div className="mt-5 space-y-5">
-                  <div>
-                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                      <label
-                        htmlFor="date"
-                        className="block text-xs font-semibold text-slate-800"
-                      >
-                        Estimasi Tanggal Pengerjaan{" "}
-                        <span className="text-red-600">*</span>
-                      </label>
-                      <div className="flex items-center gap-1.5">
-                        {[
-                          { label: "Hari Ini", offset: 0 },
-                          { label: "Besok", offset: 1 },
-                          { label: "Lusa (H+2)", offset: 2 },
-                        ].map((shortcut) => {
-                          const targetDate = addDaysToJakartaDate(shortcut.offset);
-                          const isSelected = watchedValues.date === targetDate;
-                          return (
-                            <button
-                              key={shortcut.label}
-                              type="button"
-                              onClick={() =>
-                                setValue("date", targetDate, {
-                                  shouldValidate: true,
-                                  shouldDirty: true,
-                                })
-                              }
-                              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
-                                isSelected
-                                  ? "bg-amber-400 text-slate-950 font-semibold"
-                                  : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                              }`}
-                            >
-                              {shortcut.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div className="relative">
-                      <input
-                        id="date"
-                        type="date"
-                        min={jakartaDate()}
-                        className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums border border-slate-300 rounded-lg bg-white text-slate-900"
-                        {...register("date")}
-                        {...a11y("date")}
-                      />
-                    </div>
-                    {err("date")}
-                  </div>
-
-                  <div>
-                    <label
-                      htmlFor="address"
-                      className="block text-xs font-semibold text-slate-800 mb-1.5"
-                    >
-                      Alamat Lengkap Penugasan (Blok dan Nomor Rumah){" "}
-                      <span className="text-red-600">*</span>
-                    </label>
-                    <textarea
-                      id="address"
-                      rows={3}
-                      placeholder="Nama jalan / cluster perumahan, blok, nomor rumah, kelurahan, kecamatan, kota, serta patokan lokasi"
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
-                      {...register("address")}
-                      {...a11y("address")}
-                    />
-                    {err("address")}
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between gap-2 mb-1.5">
-                      <label
-                        htmlFor="maps"
-                        className="block text-xs font-semibold text-slate-800"
-                      >
-                        Share Location / Tautan Google Maps{" "}
-                        <span className="text-slate-400 font-normal">(Opsional)</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setValue("maps", "-", {
-                            shouldValidate: true,
-                            shouldDirty: true,
-                          })
-                        }
-                        className="text-[11px] font-medium text-slate-500 hover:text-slate-800 underline"
-                      >
-                        Isi tanda strip (-)
-                      </button>
-                    </div>
-                    <input
-                      id="maps"
-                      type="text"
-                      inputMode="url"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      placeholder="https://maps.app.goo.gl/... atau kosongkan jika belum ada"
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
-                      {...register("maps")}
-                      {...a11y("maps")}
-                    />
-                    {err("maps")}
-                    <span className="block text-[11px] text-slate-500 mt-1">
-                      Tautan Maps yang diisi akan disertakan otomatis ke kolom alamat
-                      Google Form agar kurir/messenger mudah menemukan titik properti.
-                    </span>
-                  </div>
-                </div>
-              </section>
-
-              {/* Section 03: Tugas Messenger & Konfirmasi Owner */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6">
-                <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
-                  <div>
-                    <span className="text-xs font-semibold text-amber-700">
-                      03. RINCIAN TUGAS & IZIN PEMILIK
-                    </span>
-                    <h2 className="text-lg font-bold text-slate-900 mt-0.5">
-                      Tugas yang Diberikan ke Messenger
-                    </h2>
-                  </div>
-                  <ClipboardCheck className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
-                </div>
-
-                <div className="mt-5 space-y-5">
-                  <div>
-                    <label
-                      htmlFor="task"
-                      className="block text-xs font-semibold text-slate-800 mb-1.5"
-                    >
-                      Pilih Tugas Messenger <span className="text-red-600">*</span>
-                    </label>
-                    <select
-                      id="task"
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
-                      {...register("task")}
-                      {...a11y("task")}
-                    >
-                      <option value="">Pilih satu layanan Smart Messenger</option>
-                      {services.map((s) => (
-                        <option value={s.id} key={s.id}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
-
-                    {/* Interactive Service Cards */}
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      {services.map((s) => {
-                        const selected = task === s.id;
-                        return (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() =>
-                              setValue("task", s.id, {
-                                shouldValidate: true,
-                                shouldDirty: true,
-                              })
-                            }
-                            className={`text-left p-3 rounded-xl border transition-all ${
-                              selected
-                                ? "border-amber-500 bg-amber-50/60 ring-1 ring-amber-500"
-                                : "border-slate-200 hover:border-slate-300 bg-slate-50/40"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold text-slate-900">
-                                {s.short}
-                              </span>
-                              <span className="text-[11px] font-mono tabular-nums text-slate-500">
-                                {s.surchargePerUnit > 0
-                                  ? `+${rupiah(s.surchargePerUnit)}/banner`
-                                  : s.category}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-600 mt-1 line-clamp-2">
-                              {s.description}
-                            </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {err("task")}
-                  </div>
-
-                  {/* Conditional Banner Parameters Helper */}
-                  {hasBanner && (
-                    <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-900">
-                          Detail Pemasangan Banner (Otomatis masuk ke catatan Form)
-                        </span>
-                        <span className="font-mono tabular-nums text-xs font-bold text-amber-800">
-                          +{rupiah(bannerCount * TARIFF_RULES.bannerInstallFee)}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label
-                            htmlFor="form-banner-count"
-                            className="block text-xs font-medium text-slate-700 mb-1"
-                          >
-                            Jumlah Banner (1–100)
-                          </label>
-                          <input
-                            id="form-banner-count"
-                            type="number"
-                            min={1}
-                            max={100}
-                            value={bannerCount}
-                            onChange={(e) =>
-                              setBannerCount(
-                                Math.max(1, Math.min(100, Number(e.target.value) || 1))
-                              )
-                            }
-                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-amber-300 rounded-lg bg-white text-slate-900"
-                          />
-                        </div>
-                        <div>
-                          <label
-                            htmlFor="form-banner-height"
-                            className="block text-xs font-medium text-slate-700 mb-1"
-                          >
-                            Estimasi Tinggi Pasang (Maks. 4 m)
-                          </label>
-                          <input
-                            id="form-banner-height"
-                            type="number"
-                            min={0.5}
-                            max={6}
-                            step={0.5}
-                            value={bannerHeight}
-                            onChange={(e) =>
-                              setBannerHeight(
-                                Math.max(0.5, Number(e.target.value) || 1)
-                              )
-                            }
-                            className="w-full px-3 py-2 text-sm font-mono tabular-nums border border-amber-300 rounded-lg bg-white text-slate-900"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <label
-                      htmlFor="other"
-                      className="block text-xs font-semibold text-slate-800 mb-1.5"
-                    >
-                      Tugas Lainnya / Penjelasan Tambahan{" "}
-                      {task === "other" ? (
-                        <span className="text-red-600">*</span>
-                      ) : (
-                        <span className="text-slate-400 font-normal">(Opsional)</span>
-                      )}
-                    </label>
-                    <textarea
-                      id="other"
-                      rows={2}
-                      placeholder="Jelaskan rincian tugas tambahan, kontak penerima di lokasi, atau instruksi khusus untuk messenger"
-                      className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
-                      {...register("other")}
-                      {...a11y("other")}
-                    />
-                    {err("other")}
-                  </div>
-
-                  {/* Owner Confirmation Radio Group */}
-                  <fieldset className="pt-2">
-                    <legend className="text-xs font-semibold text-slate-800 mb-2">
-                      Apakah Sudah Konfirmasi Pemilik/Owner?{" "}
-                      <span className="text-red-600">*</span>
-                    </legend>
-                    <div className="grid grid-cols-2 gap-3">
-                      {(["YA", "TIDAK"] as const).map((val) => {
-                        const checked = owner === val;
-                        return (
-                          <label
-                            key={val}
-                            className={`flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
-                              checked
-                                ? "border-slate-900 bg-slate-900 text-white font-semibold"
-                                : "border-slate-200 bg-slate-50/60 text-slate-800 hover:border-slate-300"
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              value={val}
-                              className="w-4 h-4 accent-amber-500"
-                              {...register("owner")}
-                            />
-                            <span className="text-xs">
-                              {val === "YA"
-                                ? "YA — Sudah Konfirmasi Owner"
-                                : "TIDAK — Belum Konfirmasi"}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    {err("owner")}
-                    {owner === "TIDAK" && (
-                      <p className="mt-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900">
-                        Pengajuan tetap dapat dikirim untuk ditinjau staf. Namun
-                        tugas lapangan yang memerlukan izin pemilik baru akan
-                        dieksekusi setelah konfirmasi tersedia.
-                      </p>
-                    )}
-                  </fieldset>
-                </div>
-              </section>
-
-              {/* Section 04: Persetujuan & Pengiriman */}
-              <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-                <label className="flex items-start gap-3 cursor-pointer">
+            <div className="mt-5 space-y-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="nameCode"
+                    className="block text-xs font-semibold text-slate-800 mb-1.5"
+                  >
+                    Nama dan Kode Agent <span className="text-red-600">*</span>
+                  </label>
                   <input
-                    type="checkbox"
-                    className="w-4 h-4 mt-1 accent-amber-500 rounded"
-                    {...register("consent")}
-                    {...a11y("consent")}
+                    id="nameCode"
+                    type="text"
+                    placeholder="Contoh: Rahmat Hidayat (PA-208)"
+                    className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
+                    {...register("nameCode")}
+                    {...a11y("nameCode")}
                   />
-                  <span className="text-xs text-slate-700 leading-relaxed">
-                    Saya menyetujui penggunaan data di atas untuk pemrosesan layanan
-                    Smart Messenger Brighton HUB Cibubur dan memahami bahwa pembayaran
-                    dilakukan di awal setelah tarif jarak diverifikasi oleh staf cabang.
-                  </span>
+                  {err("nameCode")}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="email"
+                    className="block text-xs font-semibold text-slate-800 mb-1.5"
+                  >
+                    Email Pemesan <span className="text-red-600">*</span>
+                  </label>
+                  <input
+                    id="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="nama.agent@brighton.co.id"
+                    className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
+                    {...register("email")}
+                    {...a11y("email")}
+                  />
+                  {err("email")}
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="unit"
+                  className="block text-xs font-semibold text-slate-800 mb-1.5"
+                >
+                  Unit Brighton <span className="text-red-600">*</span>
                 </label>
-                {err("consent")}
+                <select
+                  id="unit"
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
+                  {...register("unit")}
+                  {...a11y("unit")}
+                >
+                  <option value="">Pilih unit Brighton</option>
+                  {units.map((u) => (
+                    <option key={u} value={u}>
+                      {u}
+                    </option>
+                  ))}
+                </select>
+                {err("unit")}
+              </div>
+            </div>
+          </section>
 
-                {message && (
-                  <div
-                    id="form-error-banner"
-                    role="alert"
-                    className="p-3.5 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-xs text-red-900"
+          {/* Tanggal & Alamat Lengkap Penugasan */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6">
+            <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
+              <h2 className="text-base font-bold text-slate-900">
+                Tanggal & Alamat Lengkap Penugasan
+              </h2>
+              <MapPin className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
+            </div>
+
+            <div className="mt-5 space-y-5">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="date"
+                    className="block text-xs font-semibold text-slate-800"
                   >
-                    <Info className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                    <p>{message}</p>
-                  </div>
-                )}
-
-                <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                  <button
-                    type="submit"
-                    disabled={isSubmittingOrder}
-                    aria-busy={isSubmittingOrder}
-                    aria-live="polite"
-                    className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:pointer-events-none rounded-xl transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    {isSubmittingOrder ? (
-                      <>
-                        <Loader2
-                          data-testid="submit-spinner"
-                          className="w-4 h-4 animate-spin shrink-0"
-                          aria-hidden="true"
-                        />
-                        <span>Menyinkronkan Pesanan…</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-4 h-4 shrink-0" aria-hidden="true" />
-                        <span>Kirim & Sinkronkan Pesanan</span>
-                      </>
-                    )}
-                  </button>
-
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={livePrefillUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-4 py-3 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors whitespace-nowrap"
-                    >
-                      <span>Buka di Google Form</span>
-                      <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
-                    </a>
-
-                    <button
-                      type="button"
-                      disabled={isSubmittingOrder}
-                      onClick={() => {
-                        reset(initial);
-                        setMessage("");
-                        setSentReceipt(null);
-                      }}
-                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-3 text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors whitespace-nowrap"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Reset</span>
-                    </button>
+                    Estimasi Tanggal Pengerjaan <span className="text-red-600">*</span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    {[
+                      { label: "Hari Ini", offset: 0 },
+                      { label: "Besok", offset: 1 },
+                      { label: "Lusa (H+2)", offset: 2 },
+                    ].map((shortcut) => {
+                      const targetDate = addDaysToJakartaDate(shortcut.offset);
+                      const isSelected = watchedValues.date === targetDate;
+                      return (
+                        <button
+                          key={shortcut.label}
+                          type="button"
+                          onClick={() =>
+                            setValue("date", targetDate, {
+                              shouldValidate: true,
+                              shouldDirty: true,
+                            })
+                          }
+                          className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                            isSelected
+                              ? "bg-amber-400 text-slate-950 font-semibold"
+                              : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                          }`}
+                        >
+                          {shortcut.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              </section>
-            </fieldset>
-          </form>
-        </div>
+                <input
+                  id="date"
+                  type="date"
+                  min={jakartaDate()}
+                  className="w-full px-3.5 py-2.5 text-sm font-mono tabular-nums border border-slate-300 rounded-lg bg-white text-slate-900"
+                  {...register("date")}
+                  {...a11y("date")}
+                />
+                {err("date")}
+              </div>
 
-        {/* Right Column: Sticky Interactive Tariff Simulator & Live Google Form Inspector (5 cols) */}
-        <aside className="lg:col-span-5 lg:sticky lg:top-22 space-y-6">
-          <TariffCalculator
-            roundTripKm={roundTripKm}
-            onRoundTripKmChange={setRoundTripKm}
-            hasBanner={hasBanner}
-            bannerCount={bannerCount}
-            onBannerCountChange={setBannerCount}
-            bannerHeight={bannerHeight}
-            onBannerHeightChange={setBannerHeight}
-            liveFormValues={liveFormSnapshot}
-          />
-        </aside>
-      </div>
+              <div>
+                <label
+                  htmlFor="address"
+                  className="block text-xs font-semibold text-slate-800 mb-1.5"
+                >
+                  Alamat Lengkap Penugasan (Blok dan Nomor Rumah){" "}
+                  <span className="text-red-600">*</span>
+                </label>
+                <textarea
+                  id="address"
+                  rows={3}
+                  placeholder="Nama jalan / cluster perumahan, blok, nomor rumah, kelurahan, kecamatan, kota, serta patokan lokasi"
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
+                  {...register("address")}
+                  {...a11y("address")}
+                />
+                {err("address")}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="maps"
+                    className="block text-xs font-semibold text-slate-800"
+                  >
+                    Share Location / Tautan Google Maps{" "}
+                    <span className="text-slate-400 font-normal">(Opsional)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setValue("maps", "-", {
+                        shouldValidate: true,
+                        shouldDirty: true,
+                      })
+                    }
+                    className="text-[11px] font-medium text-slate-500 hover:text-slate-800 underline"
+                  >
+                    Isi tanda strip (-)
+                  </button>
+                </div>
+                <input
+                  id="maps"
+                  type="text"
+                  inputMode="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  placeholder="https://maps.app.goo.gl/... atau kosongkan jika belum ada"
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
+                  {...register("maps")}
+                  {...a11y("maps")}
+                />
+                {err("maps")}
+              </div>
+            </div>
+          </section>
+
+          {/* Tugas yang Diberikan ke Messenger */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6">
+            <div className="flex items-center justify-between gap-2 pb-4 border-b border-slate-100">
+              <h2 className="text-base font-bold text-slate-900">
+                Tugas yang Diberikan ke Messenger
+              </h2>
+              <ClipboardCheck className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
+            </div>
+
+            <div className="mt-5 space-y-5">
+              <div>
+                <label
+                  htmlFor="task"
+                  className="block text-xs font-semibold text-slate-800 mb-1.5"
+                >
+                  Pilih Tugas Messenger <span className="text-red-600">*</span>
+                </label>
+                <select
+                  id="task"
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
+                  {...register("task")}
+                  {...a11y("task")}
+                >
+                  <option value="">Pilih satu layanan Smart Messenger</option>
+                  {services.map((s) => (
+                    <option value={s.id} key={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+                {err("task")}
+              </div>
+
+              <div>
+                <label
+                  htmlFor="other"
+                  className="block text-xs font-semibold text-slate-800 mb-1.5"
+                >
+                  Tugas Lainnya / Penjelasan Tambahan{" "}
+                  {task === "other" ? (
+                    <span className="text-red-600">*</span>
+                  ) : (
+                    <span className="text-slate-400 font-normal">(Opsional)</span>
+                  )}
+                </label>
+                <textarea
+                  id="other"
+                  rows={2}
+                  placeholder="Jelaskan rincian tugas tambahan, jumlah banner, kontak penerima di lokasi, atau instruksi khusus untuk messenger"
+                  className="w-full px-3.5 py-2.5 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 placeholder:text-slate-400"
+                  {...register("other")}
+                  {...a11y("other")}
+                />
+                {err("other")}
+              </div>
+
+              {/* Owner Confirmation Radio Group */}
+              <fieldset className="pt-1">
+                <legend className="text-xs font-semibold text-slate-800 mb-2">
+                  Apakah Sudah Konfirmasi Pemilik/Owner?{" "}
+                  <span className="text-red-600">*</span>
+                </legend>
+                <div className="grid grid-cols-2 gap-3">
+                  {(["YA", "TIDAK"] as const).map((val) => {
+                    const checked = owner === val;
+                    return (
+                      <label
+                        key={val}
+                        className={`flex items-center gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
+                          checked
+                            ? "border-slate-900 bg-slate-900 text-white font-semibold"
+                            : "border-slate-200 bg-slate-50/60 text-slate-800 hover:border-slate-300"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          value={val}
+                          className="w-4 h-4 accent-amber-500"
+                          {...register("owner")}
+                        />
+                        <span className="text-xs">
+                          {val === "YA"
+                            ? "YA — Sudah Konfirmasi Owner"
+                            : "TIDAK — Belum Konfirmasi"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {err("owner")}
+                {owner === "TIDAK" && (
+                  <p className="mt-2.5 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900">
+                    Pengajuan tetap dapat dikirim untuk ditinjau staf. Namun tugas
+                    lapangan yang memerlukan izin pemilik baru akan dieksekusi
+                    setelah konfirmasi tersedia.
+                  </p>
+                )}
+              </fieldset>
+            </div>
+          </section>
+
+          {/* Persetujuan & Pengiriman */}
+          <section className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="w-4 h-4 mt-1 accent-amber-500 rounded"
+                {...register("consent")}
+                {...a11y("consent")}
+              />
+              <span className="text-xs text-slate-700 leading-relaxed">
+                Saya menyetujui penggunaan data di atas untuk pemrosesan layanan
+                Smart Messenger Brighton HUB Cibubur dan memahami bahwa pembayaran
+                dilakukan di awal setelah tarif jarak diverifikasi oleh staf cabang.
+              </span>
+            </label>
+            {err("consent")}
+
+            {message && (
+              <div
+                id="form-error-banner"
+                role="alert"
+                className="p-3.5 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-xs text-red-900"
+              >
+                <Info className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                <p>{message}</p>
+              </div>
+            )}
+
+            <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <button
+                type="submit"
+                disabled={isSubmittingOrder}
+                aria-busy={isSubmittingOrder}
+                aria-live="polite"
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 text-sm font-bold text-slate-950 bg-amber-400 hover:bg-amber-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:pointer-events-none rounded-xl transition-all cursor-pointer whitespace-nowrap"
+              >
+                {isSubmittingOrder ? (
+                  <>
+                    <Loader2
+                      data-testid="submit-spinner"
+                      className="w-4 h-4 animate-spin shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>Menyinkronkan Pesanan…</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 shrink-0" aria-hidden="true" />
+                    <span>Kirim & Sinkronkan Pesanan</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={isSubmittingOrder}
+                onClick={() => {
+                  clearPersistedDraft();
+                  reset(initial);
+                  setMessage("");
+                  setToast(null);
+                  setSentReceipt(null);
+                }}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-3 text-xs font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors whitespace-nowrap"
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Reset Formulir</span>
+              </button>
+            </div>
+          </section>
+        </fieldset>
+      </form>
     </div>
   );
 }

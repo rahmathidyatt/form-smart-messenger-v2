@@ -3,12 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { ExternalLink, Menu, X } from "lucide-react";
-import { GOOGLE_FORM_CONFIG } from "@/lib/google-form";
+import { Menu, X } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/", label: "Pemesanan" },
-  { href: "/riwayat", label: "Riwayat & Status" },
   { href: "/ketentuan", label: "Ketentuan Tarif" },
   { href: "/admin", label: "Panel Staf" },
 ] as const;
@@ -20,7 +18,7 @@ export function Navigation() {
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
-        {/* Zone 1: Single text element wordmark */}
+        {/* Zone 1: Brand Wordmark */}
         <Link
           href="/"
           className="text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
@@ -28,7 +26,7 @@ export function Navigation() {
           Brighton Smart Messenger
         </Link>
 
-        {/* Zone 2: 4 concise single-line navigation links */}
+        {/* Zone 2: Navigation links */}
         <nav
           aria-label="Navigasi utama"
           className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600"
@@ -37,8 +35,7 @@ export function Navigation() {
             const isActive =
               item.href === "/"
                 ? pathname === "/" || pathname === "/pemesanan"
-                : pathname.startsWith(item.href) ||
-                  (item.href === "/riwayat" && pathname === "/status");
+                : pathname.startsWith(item.href);
             return (
               <Link
                 key={item.href}
@@ -56,24 +53,14 @@ export function Navigation() {
           })}
         </nav>
 
-        {/* Zone 3: 1 primary action */}
-        <div className="flex items-center gap-3 shrink-0">
-          <a
-            href={GOOGLE_FORM_CONFIG.shortUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden sm:inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap shrink-0 shadow-xs"
-          >
-            <span>Buka Google Form</span>
-            <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
-          </a>
-
+        {/* Mobile menu toggle */}
+        <div className="flex items-center md:hidden shrink-0">
           <button
             type="button"
             onClick={() => setMobileOpen((prev) => !prev)}
             aria-expanded={mobileOpen}
             aria-label={mobileOpen ? "Tutup menu navigasi" : "Buka menu navigasi"}
-            className="md:hidden inline-flex items-center justify-center p-2 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors"
+            className="inline-flex items-center justify-center p-2 rounded-lg text-slate-700 hover:bg-slate-100 transition-colors"
           >
             {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
@@ -106,17 +93,6 @@ export function Navigation() {
               </Link>
             );
           })}
-          <div className="pt-2 border-t border-slate-100">
-            <a
-              href={GOOGLE_FORM_CONFIG.shortUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-lg transition-colors"
-            >
-              <span>Buka Google Form Resmi</span>
-              <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
-            </a>
-          </div>
         </nav>
       )}
     </header>

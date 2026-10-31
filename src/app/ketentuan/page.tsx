@@ -2,14 +2,12 @@ import Link from "next/link";
 import {
   ArrowRight,
   CheckCircle2,
-  ExternalLink,
   FileText,
   MapPin,
   Ruler,
   ShieldCheck,
 } from "lucide-react";
 import { services, TARIFF_RULES, units } from "@/lib/catalog";
-import { GOOGLE_FORM_CONFIG } from "@/lib/google-form";
 import { rupiah } from "@/lib/utils";
 
 export default function TermsPage() {
@@ -39,15 +37,6 @@ export default function TermsPage() {
               <span>Mulai Buat Pesanan</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
-            <a
-              href={GOOGLE_FORM_CONFIG.shortUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl transition-colors whitespace-nowrap"
-            >
-              <span>Buka Google Form Resmi</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
           </div>
         </div>
       </section>

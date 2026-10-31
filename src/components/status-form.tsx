@@ -8,15 +8,12 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  ExternalLink,
-  FileSpreadsheet,
   MapPin,
   RefreshCw,
   Search,
   User,
 } from "lucide-react";
 import { statusLabels } from "@/lib/submission";
-import { GOOGLE_FORM_CONFIG } from "@/lib/google-form";
 import type { StoredOrderRecord } from "@/lib/server/order-store";
 
 type FilterCategory = "all" | "banner" | "docs" | "owner_pending";
@@ -243,17 +240,6 @@ export function StatusForm() {
                 {lookupResult.task}
               </p>
             </div>
-            {lookupResult.prefillUrl && (
-              <a
-                href={lookupResult.prefillUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-900 bg-amber-400 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap shrink-0"
-              >
-                <span>Buka di Google Form</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
           </div>
         )}
       </section>
@@ -409,17 +395,6 @@ export function StatusForm() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0 pt-2 lg:pt-0">
-                    <a
-                      href={order.prefillUrl || GOOGLE_FORM_CONFIG.shortUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-500 rounded-lg transition-colors whitespace-nowrap"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Buka di Google Form</span>
-                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                    </a>
-
                     <button
                       type="button"
                       onClick={() => void handleCopySummary(order)}
