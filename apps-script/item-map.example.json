@@ -1,0 +1,38 @@
+{
+  "_comment": "Pemetaan resmi Google Form https://forms.gle/DYqwvwHXGxERZihD7 (1FAIpQLSeqONvaBzMiA6CtZMFSxnIN3udlFu2Bx9EAma3LN6W78cIWTg)",
+  "name_code": {
+    "id": 1566074241,
+    "entryId": "entry.879620768",
+    "title": "NAMA DAN KODE AGENT"
+  },
+  "unit": {
+    "id": 760147080,
+    "entryId": "entry.370605340",
+    "title": "UNIT"
+  },
+  "date": {
+    "id": 1829319111,
+    "entryId": "entry.934170759",
+    "title": "TANGGAL PENGERJAAN"
+  },
+  "address": {
+    "id": 508325269,
+    "entryId": "entry.1051884350",
+    "title": "ALAMAT LENGKAP PENUGASAN (Blok dan Nomor Rumah)"
+  },
+  "task": {
+    "id": 1176534648,
+    "entryId": "entry.902053342",
+    "title": "TUGAS YANG DIBERIKAN KE MESSENGER"
+  },
+  "other": {
+    "id": 1142790665,
+    "entryId": "entry.1271873642",
+    "title": "TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS)"
+  },
+  "owner": {
+    "id": 1280203260,
+    "entryId": "entry.2046702710",
+    "title": "APAKAH SUDAH KONFIRMASI PEMILIK/OWNER"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "name_code": {
+    "id": 1566074241,
+    "title": "NAMA DAN KODE AGENT"
+  },
+  "unit": {
+    "id": 760147080,
+    "title": "UNIT"
+  },
+  "date": {
+    "id": 1829319111,
+    "title": "TANGGAL PENGERJAAN"
+  },
+  "address": {
+    "id": 508325269,
+    "title": "ALAMAT LENGKAP PENUGASAN (Blok dan Nomor Rumah)"
+  },
+  "task": {
+    "id": 1176534648,
+    "title": "TUGAS YANG DIBERIKAN KE MESSENGER"
+  },
+  "other": {
+    "id": 1142790665,
+    "title": "TUGAS LAINNYA (JIKA TUGAS TIDAK ADA DI LIST ATAS)"
+  },
+  "owner": {
+    "id": 1280203260,
+    "title": "APAKAH SUDAH KONFIRMASI PEMILIK/OWNER"
+  },
+  "email": {
+    "id": 744522129,
+    "title": "EMAIL PEMESAN WEBSITE"
+  },
+  "request_id": {
+    "id": 795609720,
+    "title": "ID PENGAJUAN WEBSITE"
+  },
+  "details": {
+    "id": 1783667034,
+    "title": "DETAIL WEBSITE"
+  }
+}

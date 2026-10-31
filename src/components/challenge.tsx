@@ -1,0 +1,5 @@
+"use client";
+import Script from "next/script";
+import {useEffect,useRef,useState} from "react";
+declare global {interface Window {turnstile?:{render:(element:HTMLElement,options:Record<string,unknown>)=>string;remove:(id:string)=>void}}}
+export function Challenge({onToken}:{onToken:(token:string)=>void}){const container=useRef<HTMLDivElement>(null);const [loaded,setLoaded]=useState(false);const callback=useRef(onToken);useEffect(()=>{callback.current=onToken;},[onToken]);useEffect(()=>{if(!loaded||!container.current||!window.turnstile)return;const instance=window.turnstile.render(container.current,{sitekey:process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,action:"order",theme:"light",size:"flexible",callback:(token:string)=>callback.current(token),"expired-callback":()=>callback.current(""),"error-callback":()=>callback.current("")});return ()=>window.turnstile?.remove(instance);},[loaded]);return <><Script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" onReady={()=>setLoaded(true)}/><div className="challenge" ref={container}/></>}

@@ -1,0 +1,21 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { units, services } from "../src/lib/catalog";
+import { previewSchema, defaults, bannerEstimate } from "../src/lib/order-schema";
+import { jakartaDate } from "../src/lib/utils";
+const valid = {...defaults,name:"Agent Contoh",code:"TEST",unit:"VISION",date:"2099-01-01",address:"Jalan Contoh Blok A Nomor 12",tasks:["documents"],consent:true};
+test("katalog 31 unit dan 9 layanan tanpa duplikat",()=>{assert.equal(units.length,31);assert.equal(new Set(units).size,31);assert.equal(services.length,9);assert.equal(new Set(services.map(s=>s.id)).size,9)});
+test("form valid dan owner belum konfirmasi boleh ditinjau",()=>assert.equal(previewSchema.safeParse(valid).success,true));
+test("field kosong ditolak",()=>assert.equal(previewSchema.safeParse(defaults).success,false));
+test("unit tak valid ditolak",()=>assert.equal(previewSchema.safeParse({...valid,unit:"FAKE"}).success,false));
+test("tanggal lampau ditolak",()=>assert.equal(previewSchema.safeParse({...valid,date:"2000-01-01"}).success,false));
+test("tugas lain butuh deskripsi",()=>assert.equal(previewSchema.safeParse({...valid,tasks:["other"]}).success,false));
+test("tinggi lebih dari 4 m ditolak",()=>assert.equal(previewSchema.safeParse({...valid,tasks:["banner"],height:4.1}).success,false));
+test("jumlah negatif dan NaN ditolak",()=>{for(const banners of [-1,NaN,1.5])assert.equal(previewSchema.safeParse({...valid,tasks:["banner"],banners}).success,false)});
+test("banner hanya ditagih untuk layanan banner",()=>{assert.equal(bannerEstimate(["banner"],2),10000);assert.equal(bannerEstimate(["documents"],2),0)});
+test("Maps tidak menerima javascript atau host palsu",()=>{for(const maps of ["javascript:alert(1)","https://google.com.evil.example/test"])assert.equal(previewSchema.safeParse({...valid,maps}).success,false)});
+test("tanggal UTC dikonversi ke Jakarta",()=>assert.equal(jakartaDate(new Date("2026-10-17T18:00:00Z")),"2026-10-18"));
+test("persetujuan wajib",()=>assert.equal(previewSchema.safeParse({...valid,consent:false}).success,false));
+
+test("tanggal kalender tidak valid ditolak",()=>assert.equal(previewSchema.safeParse({...valid,date:"2099-02-31"}).success,false));
+test("field banner tidak memblokir layanan tanpa pemasangan",()=>assert.equal(previewSchema.safeParse({...valid,banners:NaN,height:10}).success,true));
